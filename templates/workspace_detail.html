@@ -1,0 +1,402 @@
+{% extends "base.html" %}
+{% block title %}{{ workspace.name }}{% endblock %}
+
+{% block page_head %}
+<div class="page-head">
+  <div>
+    <h1><i class="bi bi-collection-fill me-2" style="color:#3b82f6"></i>{{ workspace.name }}</h1>
+    <small style="color:#64748b;font-size:12px;">
+      <i class="bi bi-chat-square-text me-1"></i>Default min comments: <strong>{{ workspace.min_comments | default(0) }}</strong>
+    </small>
+  </div>
+  <div class="d-flex gap-2">
+    <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#scheduleModal">
+      <i class="bi bi-calendar-week me-1"></i> Schedule
+      {% if workspace.schedule and workspace.schedule.enabled %}
+        <span class="badge bg-success ms-1" style="font-size:9px;">ON</span>
+      {% endif %}
+    </button>
+    <a href="{{ url_for('workspace_edit', workspace_id=workspace.id) }}" class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-pencil me-1"></i> Edit
+    </a>
+    <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="modal" data-bs-target="#deleteModal">
+      <i class="bi bi-trash me-1"></i> Delete
+    </button>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+
+  <!-- Left: Run Bot form -->
+  <div class="col-lg-7">
+    <div class="card">
+      <div class="card-header d-flex align-items-center gap-2">
+        <i class="bi bi-play-circle-fill" style="color:#3b82f6"></i>
+        Run Bot
+      </div>
+      <div class="card-body p-4">
+        <form method="POST" action="{{ url_for('workspace_run', workspace_id=workspace.id) }}" id="runForm">
+
+          <!-- URLs — explicit type per tab, no auto-detection -->
+          <label class="form-label mb-2">
+            <i class="bi bi-facebook me-1" style="color:#1877f2"></i>
+            Facebook URLs <span class="text-danger">*</span>
+          </label>
+          <ul class="nav nav-tabs mb-2" id="sourceTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+              <button class="nav-link active" id="tab-post-btn" data-bs-toggle="tab" data-bs-target="#tab-post" type="button" role="tab">
+                Post URLs
+              </button>
+            </li>
+            <li class="nav-item" role="presentation">
+              <button class="nav-link" id="tab-page-btn" data-bs-toggle="tab" data-bs-target="#tab-page" type="button" role="tab">
+                Page URLs
+              </button>
+            </li>
+            <li class="nav-item" role="presentation">
+              <button class="nav-link" id="tab-group-btn" data-bs-toggle="tab" data-bs-target="#tab-group" type="button" role="tab">
+                Group URLs
+              </button>
+            </li>
+          </ul>
+          <div class="tab-content mb-1">
+            <div class="tab-pane fade show active" id="tab-post" role="tabpanel">
+              <textarea name="post_urls" class="form-control source-input" rows="4"
+                        placeholder="One Facebook post URL per line:&#10;https://www.facebook.com/examplepage/posts/123456789&#10;https://www.facebook.com/share/p/abc123/"></textarea>
+              <div class="form-text">Fetches exactly these posts — no date range applied, per spec.</div>
+            </div>
+            <div class="tab-pane fade" id="tab-page" role="tabpanel">
+              <textarea name="page_urls" class="form-control source-input" rows="4"
+                        placeholder="One Facebook Page URL per line:&#10;https://www.facebook.com/examplepage"></textarea>
+              <div class="form-text">Fetches posts from the date range below.</div>
+            </div>
+            <div class="tab-pane fade" id="tab-group" role="tabpanel">
+              <textarea name="group_urls" class="form-control source-input" rows="4"
+                        placeholder="One Facebook Group URL per line:&#10;https://www.facebook.com/groups/examplegroup"></textarea>
+              <div class="form-text">Fetches posts from the date range below.</div>
+            </div>
+          </div>
+          <div class="form-text d-flex align-items-center justify-content-between mb-4">
+            <span>Pick the matching tab for each URL — this tells the scraper exactly what to fetch.</span>
+            <span id="urlCount" style="font-weight:600;color:#3b82f6;"></span>
+          </div>
+
+          <div class="row g-3 mb-4">
+            <div class="col-sm-6">
+              <label class="form-label"><i class="bi bi-calendar-event me-1"></i>Start Date</label>
+              <input type="date" name="start_date" class="form-control">
+              <div class="form-text">Page/group sources only — ignored for a specific post URL.</div>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label"><i class="bi bi-calendar-check me-1"></i>End Date</label>
+              <input type="date" name="end_date" class="form-control">
+              <div class="form-text">Leave empty to use today.</div>
+            </div>
+          </div>
+
+          <div class="mb-4">
+            <label class="form-label">
+              <i class="bi bi-chat-square-text me-1"></i>Minimum Comments
+            </label>
+            <input type="number" name="min_comments" class="form-control" min="0"
+                   value="{{ workspace.min_comments | default(0) }}">
+            <div class="form-text">Only posts with at least this many comments are processed. 0 = process all.</div>
+          </div>
+
+          <button type="submit" class="btn btn-primary w-100 py-2" id="runBtn">
+            <i class="bi bi-play-fill me-2"></i>Run Bot
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right: Workspace info + recent jobs -->
+  <div class="col-lg-5">
+
+    <!-- Workspace info card -->
+    <div class="card mb-4">
+      <div class="card-header"><i class="bi bi-info-circle me-2"></i>Workspace Info</div>
+      <div class="card-body p-0">
+        <table class="table mb-0" style="font-size:13px;">
+          <tr>
+            <td class="ps-4 text-muted" style="width:40%;padding:10px 0 10px 16px;">Name</td>
+            <td class="pe-4" style="padding:10px 16px 10px 0;font-weight:600;">{{ workspace.name }}</td>
+          </tr>
+          <tr>
+            <td class="ps-4 text-muted" style="padding:10px 0 10px 16px;">Default Min Comments</td>
+            <td class="pe-4" style="padding:10px 16px 10px 0;">
+              <code>{{ workspace.min_comments | default(0) }}</code>
+            </td>
+          </tr>
+          <tr>
+            <td class="ps-4 text-muted" style="padding:10px 0 10px 16px;">Scheduled Sources</td>
+            <td class="pe-4" style="padding:10px 16px 10px 0;">
+              {% if workspace.fb_sources %}
+                <span class="badge" style="background:#dcfce7;color:#15803d;font-weight:600;font-size:11px;">{{ workspace.fb_sources | length }} configured</span>
+              {% else %}
+                <span class="badge" style="background:#f1f5f9;color:#64748b;font-weight:600;font-size:11px;">None</span>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <td class="ps-4 text-muted" style="padding:10px 0 10px 16px;">Recurring Schedule</td>
+            <td class="pe-4" style="padding:10px 16px 10px 0;">
+              {% if workspace.schedule and workspace.schedule.enabled %}
+                <span class="badge" style="background:#dcfce7;color:#15803d;font-weight:600;font-size:11px;">
+                  <i class="bi bi-check-circle me-1"></i>Enabled
+                </span>
+                {% set next_run = compute_next_run(workspace.schedule) %}
+                {% if next_run %}
+                  <div class="text-muted mt-1" style="font-size:11.5px;">
+                    Next run: {{ next_run.strftime('%a %b %d, %H:%M %Z') }}
+                  </div>
+                {% endif %}
+              {% else %}
+                <span class="badge" style="background:#f1f5f9;color:#64748b;font-weight:600;font-size:11px;">Disabled</span>
+              {% endif %}
+              {% if workspace.schedule_state and workspace.schedule_state.last_run_at %}
+                <div class="text-muted mt-1" style="font-size:11.5px;">
+                  Last run: {{ workspace.schedule_state.last_run_at[:16].replace('T',' ') }}
+                  ({{ workspace.schedule_state.last_matched_count | default(0) }} posts)
+                </div>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <td class="ps-4 text-muted" style="padding:10px 0 10px 16px;">Total Jobs</td>
+            <td class="pe-4" style="padding:10px 16px 10px 0;font-weight:600;">{{ jobs | length }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+
+    <!-- Recent jobs -->
+    <div class="card">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span><i class="bi bi-clock-history me-2"></i>Recent Jobs</span>
+        {% if jobs %}
+        <a href="{{ url_for('jobs_list') }}" class="btn btn-sm btn-outline-secondary" style="font-size:11px;">View all</a>
+        {% endif %}
+      </div>
+      <div class="card-body p-0">
+        {% if jobs %}
+        <div style="max-height: 380px; overflow-y: auto;">
+          {% for job in jobs[:15] %}
+          <a href="{{ url_for('job_detail', job_id=job.id) }}"
+             style="display:flex;align-items:center;justify-content:space-between;padding:11px 16px;border-bottom:1px solid #f1f5f9;text-decoration:none;color:inherit;transition:background .1s;"
+             onmouseover="this.style.background='#f8fafc'"
+             onmouseout="this.style.background='transparent'">
+            <div>
+              <div style="font-size:12px;font-weight:600;color:#0f172a;">
+                {{ job.sources | length }} source{% if job.sources|length != 1 %}s{% endif %}
+                {% if job.post_count is not none %} → {{ job.post_count }} post{% if job.post_count != 1 %}s{% endif %}{% endif %}
+              </div>
+              <div style="font-size:11px;color:#94a3b8;margin-top:2px;">
+                {{ job.created_at[:16].replace('T',' ') }}
+              </div>
+            </div>
+            <span class="status-badge badge-{{ job.status }}" style="font-size:10px;">
+              {% if job.status == 'running' %}<span class="dot-anim"></span>{% endif %}
+              {{ job.status | capitalize }}
+            </span>
+          </a>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state py-4">
+          <i class="bi bi-inbox" style="font-size:28px;"></i>
+          <p style="font-size:13px;margin-top:8px;">No jobs yet. Run the bot above!</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Schedule modal -->
+<div class="modal fade" id="scheduleModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <form method="POST" action="{{ url_for('workspace_schedule_save', workspace_id=workspace.id) }}">
+        <div class="modal-header">
+          <h5 class="modal-title"><i class="bi bi-calendar-week me-2" style="color:#3b82f6"></i>Source Schedule</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+
+          <div class="mb-4">
+            <div class="form-check form-switch d-flex align-items-center gap-3">
+              <input class="form-check-input" type="checkbox" role="switch" name="schedule_enabled"
+                     id="scheduleEnabled" value="on"
+                     {% if workspace.schedule and workspace.schedule.enabled %}checked{% endif %}
+                     style="width:2.5em;height:1.4em;cursor:pointer;">
+              <label class="form-check-label" for="scheduleEnabled" style="font-weight:600;font-size:14px;cursor:pointer;">
+                Enable weekly schedule
+              </label>
+            </div>
+            <div class="form-text mt-1">
+              When enabled, the sources below are re-scraped automatically at the chosen day/time.
+            </div>
+          </div>
+
+          <div class="row g-3 mb-4">
+            <div class="col-sm-4">
+              <label class="form-label">Day</label>
+              <select name="schedule_day" class="form-select">
+                {% set current_day = workspace.schedule.day if workspace.schedule else 'saturday' %}
+                {% for d in ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'] %}
+                <option value="{{ d }}" {% if current_day == d %}selected{% endif %}>{{ d | capitalize }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-sm-4">
+              <label class="form-label">Time</label>
+              <input type="time" name="schedule_time" class="form-control"
+                     value="{{ workspace.schedule.time if workspace.schedule else '08:00' }}">
+            </div>
+            <div class="col-sm-4">
+              <label class="form-label">Timezone</label>
+              <select name="schedule_timezone" class="form-select">
+                {% set current_tz = workspace.schedule.timezone if workspace.schedule else 'UTC' %}
+                {% for tz in ['UTC','PKT','PDT','EDT','CDT','MDT','EST','CST','MST','PST'] %}
+                <option value="{{ tz }}" {% if current_tz == tz %}selected{% endif %}>{{ tz }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
+          {% set schedule_page_srcs = (workspace.fb_sources or []) | selectattr('type', 'equalto', 'page') | map(attribute='url') | list %}
+          {% set schedule_group_srcs = (workspace.fb_sources or []) | selectattr('type', 'equalto', 'group') | map(attribute='url') | list %}
+          <div class="row g-3 mb-4">
+            <div class="col-sm-6">
+              <label class="form-label">
+                <i class="bi bi-facebook me-1" style="color:#1877f2"></i>Page URLs
+              </label>
+              <textarea name="schedule_page_urls" class="form-control" rows="3"
+                        placeholder="One Page URL per line:&#10;https://www.facebook.com/examplepage">{{ schedule_page_srcs | join('\n') }}</textarea>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label">
+                <i class="bi bi-facebook me-1" style="color:#1877f2"></i>Group URLs
+              </label>
+              <textarea name="schedule_group_urls" class="form-control" rows="3"
+                        placeholder="One Group URL per line:&#10;https://www.facebook.com/groups/examplegroup">{{ schedule_group_srcs | join('\n') }}</textarea>
+            </div>
+          </div>
+          <div class="form-text mb-4" style="margin-top:-12px;">
+            Re-scraped automatically on the schedule above. Use the Run Bot form (with its Post URLs tab) for one-off single posts — a recurring schedule doesn't apply to a specific post.
+          </div>
+
+          <div class="row g-3 mb-4">
+            <div class="col-sm-6">
+              <label class="form-label"><i class="bi bi-calendar-event me-1"></i>Fixed Start Date</label>
+              <input type="date" name="schedule_start_date" class="form-control"
+                     value="{{ workspace.schedule.start_date if workspace.schedule and workspace.schedule.start_date else '' }}">
+              <div class="form-text">Optional. Leave empty to roll forward from the last run each time (first run looks back 7 days).</div>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label"><i class="bi bi-chat-square-text me-1"></i>Minimum Comments</label>
+              <input type="number" name="schedule_min_comments" class="form-control" min="0"
+                     value="{{ workspace.schedule.min_comments if workspace.schedule and workspace.schedule.min_comments is defined else (workspace.min_comments | default(0)) }}">
+            </div>
+          </div>
+
+          {% if workspace.schedule_state and workspace.schedule_state.last_run_status %}
+          <div class="p-3 rounded" style="background:#f8fafc;border:1px solid #e2e8f0;font-size:12.5px;">
+            <strong>Last run:</strong> {{ workspace.schedule_state.last_run_at[:16].replace('T',' ') if workspace.schedule_state.last_run_at else '—' }}
+            &middot; <strong>Status:</strong> {{ workspace.schedule_state.last_run_status }}
+            &middot; <strong>Posts:</strong> {{ workspace.schedule_state.last_matched_count | default(0) }}
+            {% if workspace.schedule_state.last_job_id %}
+              &middot; <a href="{{ url_for('job_detail', job_id=workspace.schedule_state.last_job_id) }}">View job</a>
+            {% endif %}
+          </div>
+          {% endif %}
+
+        </div>
+        <div class="modal-footer d-flex justify-content-between">
+          <button type="submit"
+                  form="disableScheduleForm"
+                  class="btn btn-outline-danger">
+            <i class="bi bi-slash-circle me-1"></i>Disable
+          </button>
+          <div class="d-flex gap-2">
+            <button type="submit" form="runNowForm" class="btn btn-outline-primary">
+              <i class="bi bi-play-fill me-1"></i>Run Now
+            </button>
+            <button type="submit" class="btn btn-primary">
+              <i class="bi bi-check-lg me-1"></i>Save
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<form method="POST" id="runNowForm" action="{{ url_for('workspace_schedule_run_now', workspace_id=workspace.id) }}"></form>
+
+<!-- Scan loading overlay -->
+<div id="scanOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:9999;align-items:center;justify-content:center;">
+  <div class="bg-white rounded-3 p-4 shadow text-center" style="min-width:300px;">
+    <div class="spinner-border text-primary mb-3" role="status" style="width:3rem;height:3rem;"></div>
+    <div style="font-weight:600;font-size:15px;color:#1e293b;">Launching Facebook scan…</div>
+    <div class="text-muted mt-1" style="font-size:12.5px;">Fetching posts and matching filters. This may take a moment.</div>
+  </div>
+</div>
+<form method="POST" id="disableScheduleForm" action="{{ url_for('workspace_schedule_disable', workspace_id=workspace.id) }}"></form>
+
+<!-- Delete confirmation modal -->
+<div class="modal fade" id="deleteModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title text-danger"><i class="bi bi-trash me-2"></i>Delete Workspace</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        Are you sure you want to delete <strong>{{ workspace.name }}</strong>?
+        This will not delete any job records or output folders — just the workspace configuration.
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <form method="POST" action="{{ url_for('workspace_delete', workspace_id=workspace.id) }}">
+          <button type="submit" class="btn btn-danger">Delete</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Live URL counter — sums non-empty lines across all three source tabs
+  const sourceInputs = document.querySelectorAll('.source-input');
+  const urlCount = document.getElementById('urlCount');
+  function updateCount() {
+    let total = 0;
+    sourceInputs.forEach(el => {
+      total += el.value.split('\n').filter(l => l.trim().length > 0).length;
+    });
+    urlCount.textContent = total > 0 ? total + ' URL' + (total !== 1 ? 's' : '') : '';
+  }
+  sourceInputs.forEach(el => el.addEventListener('input', updateCount));
+
+  // Disable run button on submit to prevent double-click
+  document.getElementById('runForm').addEventListener('submit', function() {
+    const btn = document.getElementById('runBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting...';
+  });
+
+  // Show loading overlay when Run Now is clicked
+  document.getElementById('runNowForm').addEventListener('submit', function() {
+    const overlay = document.getElementById('scanOverlay');
+    overlay.style.display = 'flex';
+  });
+</script>
+{% endblock %}

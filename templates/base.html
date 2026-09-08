@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Dashboard{% endblock %} · FB Analyzer</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --sidebar-w: 255px;
+      --sidebar-bg: #0f172a;
+      --sidebar-border: rgba(255,255,255,0.07);
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --surface: #f1f5f9;
+      --card: #ffffff;
+      --border: #e2e8f0;
+      --text: #0f172a;
+      --muted: #64748b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--surface);
+      color: var(--text);
+      margin: 0;
+      min-height: 100vh;
+    }
+
+    /* ── SIDEBAR ── */
+    .sidebar {
+      position: fixed; left: 0; top: 0;
+      width: var(--sidebar-w);
+      height: 100vh;
+      background: var(--sidebar-bg);
+      display: flex; flex-direction: column;
+      overflow-y: auto; z-index: 300;
+    }
+    .sidebar-brand {
+      display: flex; align-items: center; gap: 11px;
+      padding: 18px 20px 16px;
+      border-bottom: 1px solid var(--sidebar-border);
+      text-decoration: none;
+    }
+    .brand-icon {
+      width: 34px; height: 34px; border-radius: 8px;
+      background: var(--accent);
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 16px; flex-shrink: 0;
+    }
+    .brand-name { color: #f1f5f9; font-weight: 700; font-size: 14px; line-height: 1.2; }
+    .brand-name small { display: block; color: #64748b; font-size: 11px; font-weight: 400; }
+
+    .sb-section { padding: 10px 0; border-top: 1px solid var(--sidebar-border); margin-top: 4px; }
+    .sb-label {
+      padding: 6px 20px 3px;
+      font-size: 10px; font-weight: 600;
+      letter-spacing: .1em; text-transform: uppercase;
+      color: #475569;
+    }
+    .sb-link {
+      display: flex; align-items: center; gap: 9px;
+      padding: 8px 20px; color: #94a3b8;
+      text-decoration: none; font-size: 13.5px; font-weight: 500;
+      transition: background .12s, color .12s;
+    }
+    .sb-link:hover { background: #1e293b; color: #e2e8f0; }
+    .sb-link.active { background: #1e293b; color: #fff; border-left: 3px solid var(--accent); padding-left: 17px; }
+    .sb-link i { font-size: 15px; width: 18px; flex-shrink: 0; }
+
+    .sb-ws-item {
+      display: flex; align-items: center; gap: 9px;
+      padding: 7px 20px; color: #94a3b8;
+      text-decoration: none; font-size: 13px;
+      transition: background .12s, color .12s; border-radius: 0;
+    }
+    .sb-ws-item:hover { background: #1e293b; color: #cbd5e1; }
+    .sb-ws-item.active { color: #fff; }
+    .ws-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+
+    .sb-add {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 20px; color: var(--accent);
+      text-decoration: none; font-size: 13px; font-weight: 500;
+      transition: background .12s;
+    }
+    .sb-add:hover { background: #1e293b; color: #60a5fa; }
+
+    .running-pill {
+      margin-left: auto;
+      background: #10b981; color: #fff;
+      font-size: 10px; font-weight: 700;
+      padding: 1px 6px; border-radius: 10px;
+    }
+
+    /* ── MAIN ── */
+    .main { margin-left: var(--sidebar-w); min-height: 100vh; display: flex; flex-direction: column; }
+
+    .page-head {
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      padding: 15px 30px;
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px;
+    }
+    .page-head h1 { margin: 0; font-size: 18px; font-weight: 700; }
+
+    .page-body { padding: 28px 30px; flex: 1; }
+
+    /* ── CARDS ── */
+    .card { border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+    .card-header { background: transparent; border-bottom: 1px solid var(--border); padding: 14px 20px; font-weight: 600; font-size: 14px; }
+
+    /* ── STATUS BADGES ── */
+    .badge-pending  { background:#94a3b8; color:#fff; }
+    .badge-running  { background:#3b82f6; color:#fff; }
+    .badge-completed{ background:#10b981; color:#fff; }
+    .badge-failed   { background:#ef4444; color:#fff; }
+    .status-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 3px 10px; border-radius: 20px;
+      font-size: 11px; font-weight: 600;
+    }
+    .dot-anim {
+      width: 7px; height: 7px; border-radius: 50%; background: currentColor;
+      animation: blink 1.4s ease-in-out infinite;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* ── LOG VIEWER ── */
+    .log-viewer {
+      background: #0a0f1a; color: #a8c4e8;
+      border-radius: 10px; padding: 16px 18px;
+      font-family: 'Courier New', monospace; font-size: 12.5px; line-height: 1.65;
+      height: 520px; overflow-y: auto;
+      white-space: pre-wrap; word-break: break-all;
+      border: 1px solid #1e293b;
+    }
+    .log-viewer .log-ts   { color: #475569; }
+    .log-viewer .log-ok   { color: #34d399; }
+    .log-viewer .log-err  { color: #f87171; }
+    .log-viewer .log-warn { color: #fbbf24; }
+    .log-viewer .log-info { color: #60a5fa; }
+
+    /* ── BUTTONS ── */
+    .btn-primary { background: var(--accent); border-color: var(--accent); }
+    .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+    /* ── FORM ── */
+    .form-label { font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 5px; }
+    .form-control, .form-select {
+      border-radius: 8px; font-size: 14px;
+      border-color: var(--border);
+    }
+    .form-control:focus, .form-select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(59,130,246,.12);
+    }
+    .form-text { font-size: 12px; color: var(--muted); }
+
+    /* ── TABLE ── */
+    .table { font-size: 13.5px; }
+    .table th {
+      font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .05em;
+      color: var(--muted); border-bottom: 2px solid var(--border);
+    }
+    .table td { vertical-align: middle; }
+    .table-hover tbody tr:hover { background: #f8fafc; }
+
+    /* ── STAT CARDS ── */
+    .stat-card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 18px 22px;
+    }
+    .stat-card .stat-val { font-size: 28px; font-weight: 800; line-height: 1; }
+    .stat-card .stat-lbl { font-size: 12px; color: var(--muted); margin-top: 4px; font-weight: 500; }
+
+    /* ── WS CARD ── */
+    .ws-card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 20px;
+      transition: border-color .15s, box-shadow .15s, transform .15s;
+      text-decoration: none; display: block; color: inherit;
+    }
+    .ws-card:hover {
+      border-color: var(--accent);
+      box-shadow: 0 4px 14px rgba(59,130,246,.12);
+      transform: translateY(-2px);
+      color: inherit;
+    }
+    .ws-card .ws-name { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+    .ws-card .ws-meta { font-size: 12px; color: var(--muted); }
+
+    /* ── MISC ── */
+    .section-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 14px; }
+    .empty-state { text-align: center; padding: 48px 20px; color: var(--muted); }
+    .empty-state i { font-size: 40px; display: block; margin-bottom: 12px; opacity: .4; }
+
+    @media (max-width: 768px) {
+      .sidebar { width: 100%; height: auto; position: relative; }
+      .main { margin-left: 0; }
+    }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+
+<div class="sidebar">
+  <a href="{{ url_for('index') }}" class="sidebar-brand">
+    <div class="brand-icon"><i class="bi bi-facebook"></i></div>
+    <div class="brand-name">FB Product Analyzer
+      <small>Dashboard</small>
+    </div>
+  </a>
+
+  <div style="padding: 10px 0;">
+    <div class="sb-label">Menu</div>
+    <a href="{{ url_for('index') }}"
+       class="sb-link {% if request.endpoint == 'index' %}active{% endif %}">
+      <i class="bi bi-grid-1x2-fill"></i> Dashboard
+    </a>
+    <a href="{{ url_for('jobs_list') }}"
+       class="sb-link {% if request.endpoint in ['jobs_list','job_detail'] %}active{% endif %}">
+      <i class="bi bi-list-task"></i> All Jobs
+      {% if running_jobs_count > 0 %}
+        <span class="running-pill">{{ running_jobs_count }}</span>
+      {% endif %}
+    </a>
+  </div>
+
+  <div class="sb-section">
+    <div class="sb-label">Workspaces</div>
+    {% for ws in all_workspaces %}
+    <a href="{{ url_for('workspace_detail', workspace_id=ws.id) }}"
+       class="sb-ws-item {% if request.endpoint == 'workspace_detail' and request.view_args.workspace_id == ws.id %}active{% endif %}">
+      <span class="ws-dot"></span>
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ ws.name }}</span>
+    </a>
+    {% endfor %}
+    {% if not all_workspaces %}
+    <div class="sb-ws-item" style="color:#334155;font-style:italic;font-size:12px;">No workspaces yet</div>
+    {% endif %}
+    <a href="{{ url_for('workspace_new') }}" class="sb-add mt-1">
+      <i class="bi bi-plus-circle"></i> New Workspace
+    </a>
+  </div>
+
+  <div class="sb-section">
+    <div class="sb-label">System</div>
+    <a href="{{ url_for('settings') }}"
+       class="sb-link {% if request.endpoint == 'settings' %}active{% endif %}">
+      <i class="bi bi-gear-fill"></i> Settings
+    </a>
+  </div>
+</div>
+
+<div class="main">
+  {% block page_head %}{% endblock %}
+  <div class="page-body">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for cat, msg in messages %}
+        <div class="alert alert-{{ cat }} alert-dismissible fade show mb-4" role="alert">
+          {{ msg }}
+          <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

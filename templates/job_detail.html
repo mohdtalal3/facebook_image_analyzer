@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+{% block title %}Job {{ job.id[:8] }}{% endblock %}
+
+{% block page_head %}
+<div class="page-head">
+  <div>
+    <h1>
+      <i class="bi bi-terminal-fill me-2" style="color:#3b82f6"></i>
+      Job Logs
+      <span class="status-badge badge-{{ job.status }} ms-2" id="statusBadge">
+        {% if job.status == 'running' %}<span class="dot-anim"></span>{% endif %}
+        <span id="statusText">{{ job.status | capitalize }}</span>
+      </span>
+    </h1>
+    <small style="color:#64748b;font-size:12px;">ID: {{ job.id }}</small>
+  </div>
+  <div class="d-flex gap-2">
+    <a href="{{ url_for('job_download', job_id=job.id) }}" class="btn btn-sm btn-success" id="downloadBtn"
+       {% if job.status != 'completed' %}style="pointer-events:none;opacity:.5;" tabindex="-1" aria-disabled="true"{% endif %}>
+      <i class="bi bi-file-earmark-zip me-1"></i> Download ZIP
+    </a>
+    <a href="{{ url_for('workspace_detail', workspace_id=job.workspace_id) }}" class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-arrow-left me-1"></i> {{ job.workspace_name }}
+    </a>
+    <a href="{{ url_for('jobs_list') }}" class="btn btn-sm btn-outline-secondary">
+      All Jobs
+    </a>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+
+<!-- Job info row -->
+<div class="row g-3 mb-4">
+  <div class="col-sm-6 col-lg-3">
+    <div class="stat-card">
+      <div style="font-size:12px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Workspace</div>
+      <div style="font-size:16px;font-weight:700;">{{ job.workspace_name }}</div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="stat-card">
+      <div style="font-size:12px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Date Window</div>
+      <div style="font-size:13px;font-weight:600;">
+        {% if job.start_date or job.end_date %}
+          {{ job.start_date or 'open' }} → {{ job.end_date or 'today' }}
+        {% else %}
+          <span class="text-muted fst-italic" style="font-size:13px;">Single post(s)</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="stat-card">
+      <div style="font-size:12px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Min Comments</div>
+      <div style="font-size:16px;font-weight:700;">{{ job.min_comments | default(0) }}</div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="stat-card">
+      <div style="font-size:12px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Posts Processed</div>
+      <div style="font-size:16px;font-weight:700;" id="postCountVal">{{ job.post_count if job.post_count is not none else '—' }}</div>
+    </div>
+  </div>
+</div>
+
+<!-- Processing status stepper -->
+<div class="card mb-4">
+  <div class="card-header"><i class="bi bi-list-check me-2"></i>Processing Status</div>
+  <div class="card-body py-3">
+    <div class="d-flex flex-wrap gap-2" id="stepper">
+      {% for key, label in [
+        ('fetching_posts','Fetching posts'),
+        ('fetching_comments','Fetching comments'),
+        ('downloading_images','Downloading images'),
+        ('processing_images','Processing images'),
+        ('analyzing_products','Analyzing products'),
+        ('creating_json','Creating JSON'),
+        ('done','Completed'),
+      ] %}
+      <span class="step-pill" data-step="{{ key }}" style="padding:5px 12px;border-radius:20px;font-size:12px;font-weight:600;background:#f1f5f9;color:#94a3b8;">{{ label }}</span>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<!-- Sources list -->
+<div class="card mb-4">
+  <div class="card-header"><i class="bi bi-facebook me-2" style="color:#1877f2"></i>Sources ({{ job.sources | length }})</div>
+  <div class="card-body p-0">
+    {% for source in job.sources %}
+    <div class="{% if not loop.last %}border-bottom{% endif %}" style="padding:9px 16px;font-size:13px;display:flex;align-items:center;gap:8px;">
+      <span class="badge bg-light text-dark border" style="font-size:10px;">{{ source.type or 'auto' }}</span>
+      <a href="{{ source.url }}" target="_blank" rel="noopener noreferrer" style="color:#3b82f6;word-break:break-all;">
+        <i class="bi bi-box-arrow-up-right me-1" style="font-size:11px;"></i>{{ source.url }}
+      </a>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<!-- Log Viewer -->
+<div class="card">
+  <div class="card-header d-flex align-items-center justify-content-between">
+    <span><i class="bi bi-terminal me-2"></i>Output Log</span>
+    <div class="d-flex align-items-center gap-3">
+      <div class="form-check form-switch mb-0" style="font-size:12px;">
+        <input class="form-check-input" type="checkbox" role="switch" id="autoScroll" checked>
+        <label class="form-check-label" for="autoScroll" style="color:#64748b;">Auto-scroll</label>
+      </div>
+      <span id="pollIndicator" style="font-size:11px;color:#94a3b8;display:none;">
+        <span class="dot-anim" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#3b82f6;"></span>
+        Live
+      </span>
+    </div>
+  </div>
+  <div class="card-body p-0">
+    <div class="log-viewer" id="logViewer"></div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const JOB_ID = "{{ job.id }}";
+  const INITIAL_STATUS = "{{ job.status }}";
+  const logViewer = document.getElementById('logViewer');
+  const statusBadge = document.getElementById('statusBadge');
+  const statusText = document.getElementById('statusText');
+  const pollIndicator = document.getElementById('pollIndicator');
+  const autoScrollChk = document.getElementById('autoScroll');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const postCountVal = document.getElementById('postCountVal');
+
+  const STEP_ORDER = ['fetching_posts','fetching_comments','downloading_images','processing_images','analyzing_products','creating_json','done'];
+
+  let pollInterval = null;
+  let lastLogLen = 0;
+
+  function colorize(text) {
+    return text
+      .replace(/✅[^\n]*/g, m => `<span class="log-ok">${m}</span>`)
+      .replace(/❌[^\n]*/g, m => `<span class="log-err">${m}</span>`)
+      .replace(/⚠️[^\n]*/g, m => `<span class="log-warn">${m}</span>`)
+      .replace(/\[(\d{2}:\d{2}:\d{2})\]/g, '<span class="log-ts">[$1]</span>')
+      .replace(/={3,}/g, m => `<span style="color:#334155;">${m}</span>`);
+  }
+
+  function updateBadge(status) {
+    statusBadge.className = `status-badge badge-${status} ms-2`;
+    statusText.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+    if (status === 'running') {
+      statusBadge.insertAdjacentHTML('afterbegin', '<span class="dot-anim"></span>');
+    }
+  }
+
+  function updateStepper(rawLog) {
+    let lastIdx = -1;
+    for (const line of rawLog.split('\n')) {
+      const m = line.match(/\[STAGE\]\s*(\w+)/);
+      if (m) {
+        const idx = STEP_ORDER.indexOf(m[1]);
+        if (idx > lastIdx) lastIdx = idx;
+      }
+    }
+    document.querySelectorAll('.step-pill').forEach((el, i) => {
+      if (i <= lastIdx) {
+        el.style.background = '#dcfce7';
+        el.style.color = '#15803d';
+      } else if (i === lastIdx + 1 && INITIAL_STATUS !== 'completed') {
+        el.style.background = '#dbeafe';
+        el.style.color = '#1e40af';
+      } else {
+        el.style.background = '#f1f5f9';
+        el.style.color = '#94a3b8';
+      }
+    });
+  }
+
+  async function pollLogs() {
+    try {
+      const res = await fetch(`/api/jobs/${JOB_ID}/logs`);
+      const data = await res.json();
+
+      if (data.logs.length !== lastLogLen) {
+        lastLogLen = data.logs.length;
+        logViewer.innerHTML = colorize(escapeHtml(data.logs));
+        updateStepper(data.logs);
+        if (autoScrollChk.checked) {
+          logViewer.scrollTop = logViewer.scrollHeight;
+        }
+      }
+
+      if (data.status !== INITIAL_STATUS) {
+        updateBadge(data.status);
+      }
+
+      if (data.status === 'completed' || data.status === 'failed') {
+        stopPolling();
+        if (data.status === 'completed') {
+          downloadBtn.style.pointerEvents = 'auto';
+          downloadBtn.style.opacity = '1';
+          downloadBtn.removeAttribute('aria-disabled');
+          const resp = await fetch(`/api/jobs/${JOB_ID}/status`);
+          const s = await resp.json();
+          if (s.post_count !== null && s.post_count !== undefined) {
+            postCountVal.textContent = s.post_count;
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Poll error:', e);
+    }
+  }
+
+  function escapeHtml(str) {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function stopPolling() {
+    if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+    pollIndicator.style.display = 'none';
+  }
+
+  function startPolling() {
+    pollIndicator.style.display = 'inline-flex';
+    pollLogs();
+    pollInterval = setInterval(pollLogs, 3000);
+  }
+
+  if (INITIAL_STATUS === 'completed') {
+    STEP_ORDER.forEach((_, i) => {
+      const el = document.querySelectorAll('.step-pill')[i];
+      el.style.background = '#dcfce7';
+      el.style.color = '#15803d';
+    });
+  }
+
+  if (INITIAL_STATUS === 'running' || INITIAL_STATUS === 'pending') {
+    startPolling();
+  } else {
+    pollLogs();
+  }
+</script>
+{% endblock %}

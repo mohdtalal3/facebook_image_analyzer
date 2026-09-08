@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+
+{% block page_head %}
+<div class="page-head">
+  <div>
+    <h1><i class="bi bi-gear-fill me-2" style="color:#3b82f6"></i>Settings</h1>
+    <small style="color:#64748b;font-size:12px;">Facebook session + raw data files</small>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+
+<div class="row g-4 mb-4">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span><i class="bi bi-facebook me-2" style="color:#1877f2"></i>Facebook Session</span>
+        {% if fb_auth.updated_at %}
+        <span class="badge" style="background:#dcfce7;color:#15803d;font-size:10px;">
+          Updated {{ fb_auth.updated_at[:16].replace('T',' ') }}
+        </span>
+        {% else %}
+        <span class="badge" style="background:#fef3c7;color:#a16207;font-size:10px;">Not configured</span>
+        {% endif %}
+      </div>
+      <div class="card-body p-4">
+        <div class="alert alert-warning mb-3" style="font-size:12.5px;">
+          <i class="bi bi-exclamation-triangle me-1"></i>
+          These are your logged-in Facebook session cookie and <code>fb_dtsg</code> token — required for reliable
+          scraping and comment/image access. They expire periodically and need to be refreshed here when scraping
+          starts failing. Never share these values — they grant access to your Facebook account.
+        </div>
+        <form method="POST" action="{{ url_for('settings_fb_auth_save') }}">
+          <div class="mb-3">
+            <label class="form-label">Cookie String</label>
+            <textarea name="cookie_string" class="form-control font-monospace" rows="3" style="font-size:12px;"
+                      placeholder="c_user=...; xs=...; datr=...">{{ fb_auth.cookie_string }}</textarea>
+            <div class="form-text">Format: <code>key1=value1; key2=value2; ...</code> — copy from your browser's dev tools while logged into Facebook.</div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">fb_dtsg Token</label>
+            <input type="text" name="fb_dtsg" class="form-control font-monospace" style="font-size:12px;"
+                   placeholder="NAfx..." value="{{ fb_auth.fb_dtsg }}">
+          </div>
+          <button type="submit" class="btn btn-primary btn-sm">
+            <i class="bi bi-check-lg me-1"></i>Save Facebook Session
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-6">
+    <div class="card">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span><i class="bi bi-collection-fill me-2" style="color:#3b82f6"></i>workspaces.json</span>
+        <span class="badge" style="background:#dbeafe;color:#1e40af;font-size:10px;">{{ workspaces_raw | length }} bytes</span>
+      </div>
+      <div class="card-body p-3">
+        <form method="POST" action="{{ url_for('settings_save') }}">
+          <input type="hidden" name="target" value="workspaces">
+          <textarea name="content" class="form-control font-monospace"
+                    style="font-size:12px;min-height:420px;white-space:pre;overflow:auto;"
+                    spellcheck="false">{{ workspaces_raw }}</textarea>
+          <div class="d-flex justify-content-between align-items-center mt-3">
+            <small class="text-muted">Edit and save — changes take effect immediately.</small>
+            <button type="submit" class="btn btn-primary btn-sm">
+              <i class="bi bi-check-lg me-1"></i>Save workspaces.json
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-6">
+    <div class="card">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span><i class="bi bi-list-task me-2" style="color:#3b82f6"></i>jobs.json</span>
+        <span class="badge" style="background:#dbeafe;color:#1e40af;font-size:10px;">{{ jobs_raw | length }} bytes</span>
+      </div>
+      <div class="card-body p-3">
+        <form method="POST" action="{{ url_for('settings_save') }}">
+          <input type="hidden" name="target" value="jobs">
+          <textarea name="content" class="form-control font-monospace"
+                    style="font-size:12px;min-height:420px;white-space:pre;overflow:auto;"
+                    spellcheck="false">{{ jobs_raw }}</textarea>
+          <div class="d-flex justify-content-between align-items-center mt-3">
+            <small class="text-muted">Edit and save — changes take effect immediately.</small>
+            <button type="submit" class="btn btn-primary btn-sm">
+              <i class="bi bi-check-lg me-1"></i>Save jobs.json
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row mt-3">
+  <div class="col-12">
+    <div class="alert alert-warning" style="font-size:13px;">
+      <i class="bi bi-exclamation-triangle me-1"></i>
+      <strong>Caution:</strong> Editing these files directly can break the app if the JSON is malformed.
+      Always ensure valid JSON before saving. The scheduler reads workspaces.json every second,
+      so schedule changes apply automatically.
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}{% if workspace %}Edit {{ workspace.name }}{% else %}New Workspace{% endif %}{% endblock %}
+
+{% block page_head %}
+<div class="page-head">
+  <h1>
+    <i class="bi bi-{% if workspace %}pencil{% else %}plus-circle{% endif %}-fill me-2" style="color:#3b82f6"></i>
+    {% if workspace %}Edit Workspace{% else %}New Workspace{% endif %}
+  </h1>
+  <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-arrow-left me-1"></i> Back
+  </a>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8 col-xl-7">
+    {% if error %}
+    <div class="alert alert-danger d-flex align-items-center gap-2 mb-4">
+      <i class="bi bi-exclamation-triangle-fill"></i> {{ error }}
+    </div>
+    {% endif %}
+
+    <div class="card">
+      <div class="card-header">
+        <i class="bi bi-collection me-2"></i>
+        {% if workspace %}Workspace Settings{% else %}Create Workspace{% endif %}
+      </div>
+      <div class="card-body p-4">
+        <form method="POST">
+          <div class="mb-4">
+            <label class="form-label">Workspace Name <span class="text-danger">*</span></label>
+            <input type="text" name="name" class="form-control" required
+                   placeholder="e.g. Retail Deals Watch, Local Marketplace"
+                   value="{{ workspace.name if workspace else '' }}">
+            <div class="form-text">This will appear in the sidebar and on job records.</div>
+          </div>
+
+          <div class="mb-4">
+            <label class="form-label">
+              <i class="bi bi-chat-square-text me-1"></i>Default Minimum Comments
+            </label>
+            <input type="number" name="min_comments" class="form-control" min="0"
+                   placeholder="0"
+                   value="{{ workspace.min_comments if workspace and workspace.min_comments is defined else 0 }}">
+            <div class="form-text">
+              Only posts with at least this many comments are processed. Use 0 to process all posts.
+              This is the default pre-filled on the Run Bot form and the schedule below — both can override it.
+            </div>
+          </div>
+
+          <div class="d-flex gap-3 pt-2">
+            <button type="submit" class="btn btn-primary px-4">
+              <i class="bi bi-check-lg me-1"></i>
+              {% if workspace %}Save Changes{% else %}Create Workspace{% endif %}
+            </button>
+            {% if workspace %}
+            <a href="{{ url_for('workspace_detail', workspace_id=workspace.id) }}" class="btn btn-outline-secondary">
+              Cancel
+            </a>
+            {% else %}
+            <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">
+              Cancel
+            </a>
+            {% endif %}
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
