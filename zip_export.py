@@ -10,8 +10,7 @@ import zipfile
 from pathlib import Path
 
 from data_store import OUTPUT_DIR, EXPORTS_DIR
-
-ZIP_MAX_AGE_SECONDS = 24 * 3600  # stale exports get swept on every new build
+from constants import ZIP_MAX_AGE_SECONDS
 
 
 def cleanup_old_zips(max_age: int = ZIP_MAX_AGE_SECONDS):

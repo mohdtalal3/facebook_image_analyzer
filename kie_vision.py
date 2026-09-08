@@ -15,6 +15,8 @@ import time
 import requests
 from dotenv import load_dotenv
 
+from constants import KIE_MAX_REQUESTS_PER_WINDOW, KIE_RATE_WINDOW_SECONDS
+
 load_dotenv()
 
 KIE_API_KEY = os.getenv("KIE_API_KEY", "")
@@ -28,8 +30,6 @@ HEADERS_AUTH = {"Authorization": f"Bearer {KIE_API_KEY}"}
 # KIE allows up to 20 new generation/analysis requests per 10s per account.
 # Stay a bit under that so concurrent callers (run_facebook.py's thread pool)
 # never trip a 429, regardless of how many threads are calling in at once.
-MAX_PER_WINDOW = 18
-WINDOW_SECONDS = 10
 
 
 class RateLimiter:
@@ -50,7 +50,7 @@ class RateLimiter:
             time.sleep(0.2)
 
 
-rate_limiter = RateLimiter(MAX_PER_WINDOW, WINDOW_SECONDS)
+rate_limiter = RateLimiter(KIE_MAX_REQUESTS_PER_WINDOW, KIE_RATE_WINDOW_SECONDS)
 
 PRODUCT_EXTRACTION_PROMPT = """Product Image Extraction Agent
 

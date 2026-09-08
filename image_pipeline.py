@@ -9,9 +9,7 @@ JPEG-compressed down to <= MAX_PROCESSED_BYTES. Originals are never modified.
 import os
 from PIL import Image
 
-MAX_PROCESSED_BYTES = 200 * 1024  # 200 KB
-MIN_QUALITY = 20
-MIN_SCALE = 0.25
+from constants import MAX_PROCESSED_BYTES, MIN_QUALITY, MIN_SCALE
 
 
 def process_image(original_path: str, processed_path: str, max_bytes: int = MAX_PROCESSED_BYTES) -> str:

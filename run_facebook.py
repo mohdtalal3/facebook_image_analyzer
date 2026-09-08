@@ -32,10 +32,10 @@ import fb_client
 import image_pipeline
 import kie_vision
 from data_store import load_fb_auth
-
-# ── Temporary testing toggles ──
-FETCH_COMMENTS = False       # skip comment scraping — not needed right now
-MAX_IMAGES_PER_POST = 2      # cap images processed/analyzed per post — for testing
+from constants import (
+    FETCH_COMMENTS, ANALYZE_IMAGES, MAX_IMAGES_PER_POST, IMAGE_WORKERS,
+    POSTS_PER_SOURCE_DEFAULT,
+)
 
 
 def parse_date_arg(value: str | None, end_of_day: bool = False) -> datetime | None:
@@ -80,10 +80,6 @@ def fetch_post_meta_from_html(url: str, cookies: dict | None) -> dict:
     return meta
 
 
-IMAGE_WORKERS = 5  # concurrent image processing/analysis workers per post — kie_vision.rate_limiter
-                    # still caps actual KIE calls process-wide, so this just controls local parallelism
-
-
 def _process_one_image(orig_path_str: str, index: int, processed_dir: Path, post_id: str) -> tuple[str, dict, dict]:
     """Process + analyze a single image. Never raises — a failure is recorded
     as analysis_status: 'failed' rather than losing the image entirely."""
@@ -100,13 +96,16 @@ def _process_one_image(orig_path_str: str, index: int, processed_dir: Path, post
         )
         processed_filename = Path(processed_path).name
 
-        print("[STAGE] analyzing_products")
-        try:
-            public_url = kie_vision.upload_image(processed_path)
-            result = kie_vision.analyze_product_image(public_url)
-            analysis = {**result, "analysis_status": "success"}
-        except Exception as e:
-            print(f"  ⚠️  KIE analysis failed for {orig_path.name}: {e}")
+        if not ANALYZE_IMAGES:
+            analysis = {"brand": None, "product_name": None, "category": None, "analysis_status": "skipped"}
+        else:
+            print("[STAGE] analyzing_products")
+            try:
+                public_url = kie_vision.upload_image(processed_path)
+                result = kie_vision.analyze_product_image(public_url)
+                analysis = {**result, "analysis_status": "success"}
+            except Exception as e:
+                print(f"  ⚠️  KIE analysis failed for {orig_path.name}: {e}")
     except Exception as e:
         print(f"  ⚠️  Image processing failed for {orig_path.name}: {e}")
 
@@ -332,7 +331,7 @@ def main():
     parser.add_argument("--end-date", default=None, help="YYYY-MM-DD (page/group sources only, default: today)")
     parser.add_argument("--min-comments", type=int, default=0)
     parser.add_argument("--skip-post-ids-file", default=None, help="JSON list of post_ids to skip (cross-run dedup)")
-    parser.add_argument("--posts-per-source", type=int, default=500)
+    parser.add_argument("--posts-per-source", type=int, default=POSTS_PER_SOURCE_DEFAULT)
     parser.add_argument("--output-root", default="output")
     args = parser.parse_args()
 
@@ -389,8 +388,15 @@ def main():
             print(f"❌ Source failed entirely: {url}: {e}")
             continue
 
+    # Number every entry (1, 2, 3, ...) in insertion order for easy later reference —
+    # only in the job-wide merged mapping, not the per-post analysis.json files.
+    indexed_mapping = {
+        filename: {"index": i, **entry}
+        for i, (filename, entry) in enumerate(all_mapping.items(), start=1)
+    }
+
     (job_dir / "image_analysis_mapping.json").write_text(
-        json.dumps(all_mapping, indent=2, ensure_ascii=False), encoding="utf-8"
+        json.dumps(indexed_mapping, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     (job_dir / "manifest.json").write_text(
         json.dumps({"processed_post_ids": all_processed_ids, "post_count": len(all_processed_ids)}, indent=2),
