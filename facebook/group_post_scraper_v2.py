@@ -33,8 +33,13 @@ COOKIES = {}
 # FB_DTSG token (set by UI when provided)
 FB_DTSG = ""
 
+# Whether PROXIES is currently a STATIC_PROXY (cookie session) or a
+# ROTATING_PROXY (no cookies) — set by fb_client.apply_auth(). Determines how
+# retry_request() reacts to a proxy failure (see proxy_utils.rotate_or_retry()).
+IS_STATIC_PROXY = False
+
 if PROXY:
-    print(f"Using proxy: {PROXY}")
+    print("Using proxy (fallback PROXY env var)")
 
 
 def extract_group_name(node):
@@ -70,7 +75,7 @@ def extract_group_name(node):
 def retry_request(url, headers, data, proxies, max_retries=5):
     """Make a POST request with retry logic"""
     global PROXIES
-    from proxy_utils import rotate_static_proxy, is_proxy_infra_error, is_ip_blocked
+    from proxy_utils import rotate_or_retry, is_proxy_infra_error, is_ip_blocked
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -78,29 +83,25 @@ def retry_request(url, headers, data, proxies, max_retries=5):
             if r.status_code == 200:
                 return r
             if is_proxy_infra_error(status_code=r.status_code):
-                print(f"  🚫 Attempt {attempt}/{max_retries}: Proxy auth failed (HTTP {r.status_code}) — rotating static proxy...")
-                new_p = rotate_static_proxy()
+                new_p = rotate_or_retry(IS_STATIC_PROXY, f"  🚫 Attempt {attempt}/{max_retries}: Proxy auth failed (HTTP {r.status_code})")
                 if new_p:
                     proxies = new_p
                     PROXIES = new_p
             elif is_ip_blocked(status_code=r.status_code, response_text=r.text):
-                print(f"  🛽 Attempt {attempt}/{max_retries}: Facebook blocked this IP (HTTP {r.status_code}) — rotating static proxy...")
-                new_p = rotate_static_proxy()
+                new_p = rotate_or_retry(IS_STATIC_PROXY, f"  🛽 Attempt {attempt}/{max_retries}: Facebook blocked this IP (HTTP {r.status_code})")
                 if new_p:
                     proxies = new_p
                     PROXIES = new_p
             else:
                 print(f"  ⚠️ Attempt {attempt}/{max_retries}: Status {r.status_code}")
         except requests.exceptions.ProxyError as e:
-            print(f"  🚫 Attempt {attempt}/{max_retries}: Proxy unreachable — rotating static proxy...")
-            new_p = rotate_static_proxy()
+            new_p = rotate_or_retry(IS_STATIC_PROXY, f"  🚫 Attempt {attempt}/{max_retries}: Proxy unreachable")
             if new_p:
                 proxies = new_p
                 PROXIES = new_p
         except Exception as e:
             if is_proxy_infra_error(exc=e):
-                print(f"  🚫 Attempt {attempt}/{max_retries}: Proxy connection error — rotating static proxy...")
-                new_p = rotate_static_proxy()
+                new_p = rotate_or_retry(IS_STATIC_PROXY, f"  🚫 Attempt {attempt}/{max_retries}: Proxy connection error")
                 if new_p:
                     proxies = new_p
                     PROXIES = new_p
@@ -152,9 +153,13 @@ def download_image(url, post_id, image_index=1, save_dir="group_post"):
         return None
 
 
-def fetch_remaining_images(last_media_id, post_id, current_image_count, save_dir="group_post", max_images=None):
+def fetch_remaining_images(last_media_id, post_id, current_image_count, save_dir="group_post", max_images=None,
+                            download_images=True):
     """Fetch remaining images using media ID iteration (for posts with 5+ images).
-    Stops as soon as `max_images` total (current_image_count + fetched) is reached."""
+    Stops as soon as `max_images` total (current_image_count + fetched) is reached.
+    When download_images is False, image URLs are still discovered/counted
+    (each still needs one GraphQL call to find the next node) but the actual
+    image bytes are not downloaded — 'saved_as' is left None."""
     if not last_media_id or not post_id:
         return []
     if max_images is not None and current_image_count >= max_images:
@@ -220,14 +225,13 @@ def fetch_remaining_images(last_media_id, post_id, current_image_count, save_dir
                     break
             
             if image_url:
-                saved_filename = download_image(image_url, post_id, image_index, save_dir)
-                if saved_filename:
-                    remaining_photos.append({
-                        'id': current_node,
-                        'url': image_url,
-                        'saved_as': saved_filename
-                    })
-                    image_index += 1
+                saved_filename = download_image(image_url, post_id, image_index, save_dir) if download_images else None
+                remaining_photos.append({
+                    'id': current_node,
+                    'url': image_url,
+                    'saved_as': saved_filename
+                })
+                image_index += 1
             
             # Extract next node
             next_node = None
@@ -447,10 +451,43 @@ def is_reel_or_video_post(node):
     return False
 
 
-def extract_media(node, post_id, save_dir="group_post", max_images=None):
+def _dedupe_photos(photos):
+    """Drop duplicate photo entries by media id (falling back to url when no
+    id is present) — first occurrence wins. Order is otherwise preserved: a
+    later duplicate is simply omitted, everything after it shifts up to fill
+    the gap, nothing is reordered. Needed because fetch_remaining_images()
+    starts its pagination walk AT last_media_id, which is itself already one
+    of the photos collected from the initial attachments — its own node can
+    come back as the first 'remaining' result."""
+    seen = set()
+    deduped = []
+    for p in photos:
+        key = p.get("id") or p.get("url")
+        if key is None or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(p)
+    return deduped
+
+
+def extract_media(node, post_id, save_dir="group_post", max_images=None, download_images=True,
+                   fetch_extra=True):
     """Extract photo and video URLs from a post.
     max_images caps how many photos are actually downloaded (None = no limit).
-    Videos are never downloaded (unsupported), so they don't count against the cap."""
+    Videos are never downloaded (unsupported), so they don't count against the cap.
+
+    download_images=False discovers/counts each photo's URL without
+    downloading the bytes — 'saved_as' is left None for every entry. Used
+    for a cheap discovery pass where images should only be downloaded later,
+    for posts that end up qualifying.
+
+    fetch_extra=False skips fetch_remaining_images() entirely (the paginated
+    lookup for posts with more than the 5 photos already present in the
+    story node's attachments — each of those costs its own GraphQL request,
+    even just to discover a URL). Only the up-to-5 "free" photos already in
+    the node are returned; `last_media_id` (also returned) lets the caller
+    fetch those extra images later, on demand, for posts that end up
+    qualifying (see fb_client.download_pending_post_images())."""
     media = {
         'photos': [],
         'videos': []
@@ -477,7 +514,7 @@ def extract_media(node, post_id, save_dir="group_post", max_images=None):
                 media_id = attachment['media'].get('id')
                 last_media_id = media_id  # Track the last media ID
                 image_url = photo_data['photo_image'].get('uri')
-                saved_filename = download_image(image_url, post_id, image_index, save_dir)
+                saved_filename = download_image(image_url, post_id, image_index, save_dir) if download_images else None
                 media['photos'].append({
                     'id': media_id,
                     'url': image_url,
@@ -498,7 +535,7 @@ def extract_media(node, post_id, save_dir="group_post", max_images=None):
                     last_media_id = media_id  # Track the last media ID
                     if 'image' in photo_data:
                         image_url = photo_data['image'].get('uri')
-                        saved_filename = download_image(image_url, post_id, image_index, save_dir)
+                        saved_filename = download_image(image_url, post_id, image_index, save_dir) if download_images else None
                         media['photos'].append({
                             'id': media_id,
                             'url': image_url,
@@ -516,13 +553,23 @@ def extract_media(node, post_id, save_dir="group_post", max_images=None):
                 'thumbnail': video_data.get('preferred_thumbnail', {}).get('image', {}).get('uri')
             })
 
-    # Fetch remaining images if we have exactly 5 photos (indicating there may be more) —
-    # fetch_remaining_images stops fetching on its own once max_images is hit.
-    if image_index == 5 and last_media_id and not _cap_reached():
-        remaining_photos = fetch_remaining_images(last_media_id, post_id, image_index, save_dir, max_images=max_images)
+    # Try for more images whenever we have a last_media_id to continue from — the
+    # initial attachments don't reliably cap out at exactly 5 (it varies), so an
+    # exact-count check here would silently miss images whenever the real
+    # per-node/connection limit isn't 5. fetch_remaining_images() self-terminates
+    # the moment Facebook stops returning a next node, so this costs at most one
+    # extra "no more images" request rather than an assumption that can go wrong.
+    # Skipped entirely once the cap is already reached, or when the caller wants to
+    # defer this (fetch_extra=False) to a later, on-demand call for posts that end
+    # up qualifying. fetch_remaining_images also stops on its own once max_images
+    # is hit.
+    if last_media_id and not _cap_reached() and fetch_extra:
+        remaining_photos = fetch_remaining_images(last_media_id, post_id, image_index, save_dir, max_images=max_images,
+                                                   download_images=download_images)
         media['photos'].extend(remaining_photos)
 
-    return media
+    media['photos'] = _dedupe_photos(media['photos'])
+    return media, last_media_id
 
 
 def post_already_exists(post_id, base_folder, name_folder):
@@ -534,8 +581,17 @@ def post_already_exists(post_id, base_folder, name_folder):
     return os.path.exists(post_file)
 
 
-def extract_post_data(node, group_name=None, published_at=None, save_root="group_post", max_images=None):
-    """Extract relevant data from a post node"""
+def extract_post_data(node, group_name=None, published_at=None, save_root="group_post", max_images=None,
+                       download_images=True, text_filter=None, fetch_extra_images=True):
+    """Extract relevant data from a post node.
+
+    text_filter: Optional callable(message_text) -> bool. When it returns
+    False, this returns None immediately — BEFORE extract_media() below is
+    ever called — so a rejected post never triggers a single
+    photo-URL-discovery request, let alone an image download.
+
+    fetch_extra_images: passed straight through to extract_media() — see its
+    docstring."""
     if not node or node.get('__typename') != 'Story':
         return None
 
@@ -547,6 +603,9 @@ def extract_post_data(node, group_name=None, published_at=None, save_root="group
     message_obj = content_story.get('message', {})
     if message_obj:
         message = message_obj.get('text', '')
+
+    if text_filter and not text_filter(message):
+        return None
 
     post_id = node.get('post_id')
     if not post_id:
@@ -572,7 +631,10 @@ def extract_post_data(node, group_name=None, published_at=None, save_root="group
 
     # Extract media once — this downloads images, calling it twice would
     # download every image in the post twice for no reason.
-    media = extract_media(node, post_id, media_save_dir, max_images=max_images)
+    media, last_media_id = extract_media(
+        node, post_id, media_save_dir, max_images=max_images, download_images=download_images,
+        fetch_extra=fetch_extra_images,
+    )
 
     post_data = {
         'id': node.get('id'),
@@ -584,6 +646,7 @@ def extract_post_data(node, group_name=None, published_at=None, save_root="group
         'published_at': published_at,
         'photos': media['photos'],
         'videos': media['videos'],
+        'last_media_id': last_media_id,
     }
 
     # Save individual post to folder structure: {save_root}/{group_name}/{post_id}/{post_id}.json
@@ -600,7 +663,8 @@ def extract_post_data(node, group_name=None, published_at=None, save_root="group
 
 def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
                  start_date=None, end_date=None, save_root="group_post", max_pages=300,
-                 max_images_per_post=None):
+                 max_images_per_post=None, download_images=True, text_filter=None,
+                 fetch_extra_images=True):
     """Fetch posts from Facebook group
 
     Args:
@@ -613,6 +677,18 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
         save_root: Base directory posts/media are saved under (default "group_post")
         max_pages: Safety cap on GraphQL pagination requests
         max_images_per_post: Caps how many photos are actually downloaded per post (None = no limit)
+        download_images: When False, every post's image URLs/counts are still
+            discovered (post["photos"]) but no image bytes are downloaded —
+            for a cheap discovery pass. Download them later for chosen posts
+            via fb_client.download_pending_post_images().
+        text_filter: Optional callable(message_text) -> bool, passed straight
+            through to extract_post_data() — see its docstring. Posts it
+            rejects are not counted against `limit` (only posts that pass
+            count as "found").
+        fetch_extra_images: passed straight through to extract_post_data() /
+            extract_media() — see extract_media()'s docstring. When False,
+            only the up-to-5 "free" photos per post are discovered; extra
+            images (5+) are fetched later, on demand, via `last_media_id`.
     """
     global GROUP_NAME
     all_posts = []
@@ -768,13 +844,16 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
 
                 post_data = extract_post_data(
                     story_node, GROUP_NAME, published_at=published_at, save_root=save_root,
-                    max_images=max_images_per_post,
+                    max_images=max_images_per_post, download_images=download_images,
+                    text_filter=text_filter, fetch_extra_images=fetch_extra_images,
                 )
                 if post_data:
                     batch_posts.append(post_data)
                     all_posts.append(post_data)
                     posts_found += 1
                     print(f"  - Found post: {post_data['post_id']}")
+                elif text_filter:
+                    print(f"  ⏭️  Skipping post {temp_post_id} — rejected by text_filter")
                     
                     # Check if we should process this batch
                     if batch_size > 0 and len(batch_posts) >= batch_size and on_batch_complete:

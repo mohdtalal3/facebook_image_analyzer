@@ -20,7 +20,6 @@ from constants import KIE_MAX_REQUESTS_PER_WINDOW, KIE_RATE_WINDOW_SECONDS
 load_dotenv()
 
 KIE_API_KEY = os.getenv("KIE_API_KEY", "")
-
 UPLOAD_URL = "https://kieai.redpandaai.co/api/file-stream-upload"
 RESPONSES_URL = "https://api.kie.ai/codex/v1/responses"
 

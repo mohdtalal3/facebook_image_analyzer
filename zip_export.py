@@ -4,7 +4,6 @@ Build a downloadable ZIP of a job's processed output, and keep the exports/
 directory from accumulating stale files indefinitely.
 """
 
-import json
 import time
 import zipfile
 from pathlib import Path
@@ -36,14 +35,17 @@ def _dir_mtime(path: Path) -> float:
 def build_job_zip(job_id: str) -> str:
     """Build (or reuse an up-to-date) ZIP for a job's output directory.
 
-    Layout:
-        posts/post_<id>.json
-        images/post_<id>_<original filename>
+    Mirrors output/<job_id>/ 1:1 (see CONTEXT.md "Output Folder Structure"):
+        <brand>/<category>/images/post_<id>_<filename>          # flat, for quick browsing
+        <brand>/<category>/image_analysis.json                   # combined, for quick browsing
+        <brand>/<category>/post_<id>/post.json                   # full per-post detail, for debugging
+        <brand>/<category>/post_<id>/images/original/<filename>
+        <brand>/<category>/post_<id>/analysis/image_analysis.json
         image_analysis_mapping.json
 
-    Processed (grayscale/compressed) images are intentionally left out —
-    they're an intermediate artifact for the AI call, not something the
-    export needs; only originals + analysis results are included.
+    Excludes _staging/ (should be empty on a clean run anyway) and every
+    images/processed/ folder — grayscale/compressed intermediates for the AI
+    call, not something the export needs.
 
     Returns the zip file path.
     """
@@ -58,36 +60,15 @@ def build_job_zip(job_id: str) -> str:
         return str(zip_path)
 
     tmp_zip_path = zip_path.with_suffix(".zip.tmp")
-    mapping: dict = {}
 
     with zipfile.ZipFile(tmp_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for post_dir in sorted(job_dir.iterdir()):
-            if not post_dir.is_dir() or not post_dir.name.startswith("post_"):
+        for path in sorted(job_dir.rglob("*")):
+            if not path.is_file():
                 continue
-            post_id = post_dir.name[len("post_"):]
-
-            post_json = post_dir / "post.json"
-            if post_json.exists():
-                zf.write(post_json, f"posts/post_{post_id}.json")
-
-            orig_dir = post_dir / "images" / "original"
-            if orig_dir.exists():
-                for img in sorted(orig_dir.iterdir()):
-                    if img.is_file():
-                        zf.write(img, f"images/post_{post_id}_{img.name}")
-
-            analysis_json = post_dir / "analysis" / "image_analysis.json"
-            if analysis_json.exists():
-                try:
-                    mapping.update(json.loads(analysis_json.read_text(encoding="utf-8")))
-                except Exception:
-                    pass
-
-        job_mapping_file = job_dir / "image_analysis_mapping.json"
-        if job_mapping_file.exists():
-            zf.writestr("image_analysis_mapping.json", job_mapping_file.read_text(encoding="utf-8"))
-        elif mapping:
-            zf.writestr("image_analysis_mapping.json", json.dumps(mapping, indent=2, ensure_ascii=False))
+            rel = path.relative_to(job_dir)
+            if rel.parts[0] == "_staging" or "processed" in rel.parts:
+                continue
+            zf.write(path, str(rel))
 
     tmp_zip_path.replace(zip_path)
     return str(zip_path)

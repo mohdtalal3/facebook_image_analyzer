@@ -9,11 +9,12 @@ instead of hunting through run_facebook.py / kie_vision.py / etc.
 
 # ── run_facebook.py pipeline toggles ──
 FETCH_COMMENTS = False          # skip comment scraping — not needed right now
-ANALYZE_IMAGES = True           # run the KIE upload+analyze workflow at all —
+ANALYZE_IMAGES = False      # run the KIE upload+analyze workflow at all —
                                  # when False, images are still downloaded/processed
                                  # but never sent to KIE (analysis_status: "skipped")
-MAX_IMAGES_PER_POST = 2         # cap images downloaded/processed/analyzed per post — for testing
+MAX_IMAGES_PER_POST = 10        # cap images downloaded/processed/analyzed per post — for testing
 IMAGE_WORKERS = 5               # concurrent per-post image processing/analysis threads
+IMAGE_DOWNLOAD_WORKERS = 5      # concurrent per-post image *download* threads (fb_client.download_pending_post_images)
 POSTS_PER_SOURCE_DEFAULT = 500  # default --posts-per-source limit for page/group fetch
 
 # ── image_pipeline.py ──
@@ -27,3 +28,6 @@ KIE_RATE_WINDOW_SECONDS = 10
 
 # ── zip_export.py ──
 ZIP_MAX_AGE_SECONDS = 24 * 3600   # sweep exports older than this on every new build
+
+# ── brand filtering / output organization (run_facebook.py) ──
+MIN_IMAGES_FOR_KEEP = 2   # a post needs more than 1 image to be kept (see brand_mapping.py)

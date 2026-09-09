@@ -33,8 +33,30 @@ def rotate_static_proxy():
 
     port = random.randint(STATIC_PORT_MIN, STATIC_PORT_MAX)
     proxy_url = _replace_trailing_port(proxy_base, port)
-    print(f"  🔁 Static proxy rotated → new port {port}  ({proxy_url})")
+    print(f"  🔁 Static proxy rotated → new port {port}")
     return _build_proxy_dict(proxy_url)
+
+
+def rotate_or_retry(is_static: bool, prefix: str):
+    """Call this from a retry loop on a proxy-related failure.
+
+    In STATIC mode, bump to a fresh static port (rotate_static_proxy()) — the
+    same gateway is otherwise stuck on one dead/blocked IP for the rest of
+    the run. In ROTATING mode there is nothing to swap client-side: the
+    rotating-proxy gateway already hands out a new exit IP on every new
+    connection, so a plain retry through the same URL is enough — this must
+    NOT fall through to rotate_static_proxy(), since STATIC_PROXY may also
+    be configured (for when a session cookie is set) and would silently pull
+    the run over to static-proxy mode on the first failure.
+
+    Returns a fresh proxy dict to swap in, or None if the caller should just
+    retry unchanged.
+    """
+    if is_static:
+        print(f"{prefix} — rotating static proxy...")
+        return rotate_static_proxy()
+    print(f"{prefix} — retrying (rotating proxy gateway assigns a new exit IP per request)")
+    return None
 
 
 def is_proxy_infra_error(exc=None, status_code=None) -> bool:
@@ -103,7 +125,6 @@ def select_proxy(has_cookies: bool):
         proxy_url = static_proxy
         print("🔒 Proxy mode : STATIC  (cookie-based session, fixed IP)")
         print("   Initial port: using STATIC_PROXY as configured")
-        print(f"   Proxy URL   : {proxy_url}")
         return _build_proxy_dict(proxy_url)
 
     if not rotating_proxy:
@@ -111,5 +132,4 @@ def select_proxy(has_cookies: bool):
         return None
 
     print("🔄 Proxy mode : ROTATING  (no cookies, rotating IP per request)")
-    print(f"   Proxy URL   : {rotating_proxy}")
     return _build_proxy_dict(rotating_proxy)
