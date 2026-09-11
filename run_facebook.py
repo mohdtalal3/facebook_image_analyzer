@@ -30,6 +30,7 @@ import json
 import re
 import shutil
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from html import unescape
@@ -46,6 +47,30 @@ from constants import (
     FETCH_COMMENTS, ANALYZE_IMAGES, MAX_IMAGES_PER_POST, IMAGE_WORKERS,
     POSTS_PER_SOURCE_DEFAULT, MIN_IMAGES_FOR_KEEP,
 )
+
+SOURCE_MAX_ATTEMPTS = 3
+
+
+def _with_source_retries(description: str, fn, max_attempts: int = SOURCE_MAX_ATTEMPTS):
+    """Run one source's discovery/processing callable with retries — a
+    transient failure (proxy hiccup, temporary block, timeout) gets up to
+    `max_attempts` tries with backoff before the source is given up on.
+    Returns fn()'s return value, or None if every attempt failed (the
+    per-source isolation then just logs it and the job continues with the
+    remaining sources)."""
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_error = e
+            print(f"  ⚠️ Attempt {attempt}/{max_attempts} failed for {description}: {e}")
+            if attempt < max_attempts:
+                wait_time = attempt * 5
+                print(f"  ⏳ Retrying source in {wait_time} seconds...")
+                time.sleep(wait_time)
+    print(f"  ❌ Giving up on {description} after {max_attempts} attempts: {last_error}")
+    return None
 
 
 def parse_date_arg(value: str | None, end_of_day: bool = False) -> datetime | None:
@@ -455,7 +480,11 @@ def discover_page_or_group_posts(job_dir: Path, url: str, src_type: str, cookies
     process_page_or_group_posts() below needs, or None if the source
     couldn't be resolved."""
     print("[STAGE] fetching_posts")
-    scratch_root = job_dir / f"_scratch_{src_type}_{abs(hash(url)) % 100000}"
+    # Unique per call (not just per URL) so a source-level retry gets a clean
+    # scratch dir — otherwise the scraper's post_already_exists() check would
+    # skip every post saved by the failed attempt and drop it from the
+    # returned post list.
+    scratch_root = job_dir / f"_scratch_{src_type}_{abs(hash(url)) % 100000}_{datetime.now(timezone.utc).strftime('%H%M%S%f')}"
     text_filter = brand_filter
 
     if src_type == "group":
@@ -643,16 +672,16 @@ def main():
 
         try:
             if src_type == "post":
-                post_id = discover_post_url(url, cookies)
+                post_id = _with_source_retries(url, lambda: discover_post_url(url, cookies))
                 if post_id:
                     discovered_post_sources.append((url, post_id))
                     print(f"  🔗 Found 1 post")
                     total_found += 1
             else:
-                discovered = discover_page_or_group_posts(
+                discovered = _with_source_retries(url, lambda: discover_page_or_group_posts(
                     job_dir, url, src_type, cookies, args.min_comments,
                     start_dt, end_dt, args.posts_per_source, effective_filter,
-                )
+                ))
                 if discovered is not None:
                     discovered_page_group_sources.append(discovered)
                     print(f"  🔗 Found {len(discovered['posts'])} post(s)")
@@ -775,22 +804,23 @@ def main():
 
     for url, post_id in discovered_post_sources:
         print(f"\nProcessing post: {url}")
-        try:
-            processed_id, mapping = process_post_url(job_dir, post_id, url, cookies, skip_ids, brand_filter)
+        result = _with_source_retries(
+            url, lambda: process_post_url(job_dir, post_id, url, cookies, skip_ids, brand_filter))
+        if result:
+            processed_id, mapping = result
             if processed_id:
                 all_processed_ids.append(processed_id)
                 all_mapping.update(mapping)
-        except Exception as e:
-            print(f"❌ Source failed entirely: {url}: {e}")
 
     for discovered in discovered_page_group_sources:
         print(f"\nProcessing source: {discovered['url']}  ({len(discovered['posts'])} post(s))")
-        try:
-            ids, mapping = process_page_or_group_posts(job_dir, discovered, cookies, skip_ids, brand_filter)
+        result = _with_source_retries(
+            discovered["url"],
+            lambda d=discovered: process_page_or_group_posts(job_dir, d, cookies, skip_ids, brand_filter))
+        if result:
+            ids, mapping = result
             all_processed_ids.extend(ids)
             all_mapping.update(mapping)
-        except Exception as e:
-            print(f"❌ Source failed entirely: {discovered['url']}: {e}")
 
     shutil.rmtree(job_dir / "_staging", ignore_errors=True)
 

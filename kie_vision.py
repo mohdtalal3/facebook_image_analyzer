@@ -12,6 +12,8 @@ import os
 import re
 import threading
 import time
+from pathlib import Path
+
 import requests
 from dotenv import load_dotenv
 
@@ -26,12 +28,19 @@ RESPONSES_URL = "https://api.kie.ai/codex/v1/responses"
 HEADERS_AUTH = {"Authorization": f"Bearer {KIE_API_KEY}"}
 
 # ── Rate limiter ──
-# KIE allows up to 20 new generation/analysis requests per 10s per account.
-# Stay a bit under that so concurrent callers (run_facebook.py's thread pool)
-# never trip a 429, regardless of how many threads are calling in at once.
+# KIE allows up to 20 new generation/analysis requests per 10s PER ACCOUNT.
+# Brand jobs run as separate subprocesses in parallel, so the limiter must be
+# shared across processes — an in-memory per-process limiter would let N
+# concurrent brand jobs collectively exceed the account cap (and a finished
+# job's unused capacity would be wasted). SharedFileRateLimiter keeps the
+# recent request timestamps in a small JSON file under data/ guarded by an
+# flock, so every process draws from the same account-wide window.
 
 
 class RateLimiter:
+    """Single-process rate limiter (kept as fallback when fcntl is
+    unavailable). Thread-safe within one process."""
+
     def __init__(self, max_calls: int, period: float):
         self.max_calls = max_calls
         self.period = period
@@ -49,7 +58,59 @@ class RateLimiter:
             time.sleep(0.2)
 
 
-rate_limiter = RateLimiter(KIE_MAX_REQUESTS_PER_WINDOW, KIE_RATE_WINDOW_SECONDS)
+class SharedFileRateLimiter:
+    """Cross-process rate limiter: all KIE-calling processes (the parallel
+    brand jobs, the discovery job, the CLI) share one window of timestamps
+    persisted in `state_path`, locked with flock for atomic read-modify-write.
+    When a process exits, its unused capacity is simply not extended — the
+    survivors automatically get the full account budget back. Prunes entries
+    older than the window on every attempt, so a crashed process's stale
+    timestamps disappear within one period."""
+
+    def __init__(self, max_calls: int, period: float, state_path):
+        self.max_calls = max_calls
+        self.period = period
+        self.state_path = Path(state_path)
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def acquire(self):
+        while True:
+            if self._try_acquire():
+                return
+            time.sleep(0.2)
+
+    def _try_acquire(self) -> bool:
+        import fcntl
+        now = time.time()
+        fd = os.open(self.state_path, os.O_RDWR | os.O_CREAT, 0o644)
+        with os.fdopen(fd, "r+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                raw = f.read().strip()
+                try:
+                    timestamps = json.loads(raw) if raw else []
+                except Exception:
+                    timestamps = []
+                timestamps = [t for t in timestamps if now - t < self.period]
+                if len(timestamps) >= self.max_calls:
+                    return False
+                timestamps.append(now)
+                f.seek(0)
+                f.truncate()
+                f.write(json.dumps(timestamps))
+                return True
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+
+
+try:
+    import fcntl  # noqa: F401 — POSIX only; falls back to in-process limiter on Windows
+    rate_limiter = SharedFileRateLimiter(
+        KIE_MAX_REQUESTS_PER_WINDOW, KIE_RATE_WINDOW_SECONDS,
+        Path(__file__).resolve().parent / "data" / "kie_rate_window.json",
+    )
+except ImportError:
+    rate_limiter = RateLimiter(KIE_MAX_REQUESTS_PER_WINDOW, KIE_RATE_WINDOW_SECONDS)
 
 PRODUCT_EXTRACTION_PROMPT = """Analyze the provided product image and return:
 
@@ -104,25 +165,43 @@ class KieAnalysisError(Exception):
     pass
 
 
-def upload_image(file_path: str) -> str:
-    """Upload a local image and return its public URL."""
-    with open(file_path, "rb") as f:
-        response = requests.post(
-            UPLOAD_URL,
-            headers=HEADERS_AUTH,
-            files={"file": (os.path.basename(file_path), f, "image/jpeg")},
-            data={"uploadPath": "fb_product_images"},
-            timeout=60,
-        )
-    response.raise_for_status()
-    data = response.json()
-    if not data.get("success"):
-        raise KieAnalysisError(f"Upload failed: {data}")
-    file_data = data["data"]
-    url = file_data.get("fileUrl") or file_data.get("url") or file_data.get("downloadUrl")
-    if not url:
-        raise KieAnalysisError(f"Could not find URL in upload response: {file_data}")
-    return url
+def upload_image(file_path: str, upload_path: str = "fb_product_images", mime: str = "image/jpeg",
+                 max_retries: int = 3) -> str:
+    """Upload a local image to KIE's file-stream-upload endpoint and return
+    its public URL. Single shared implementation for both the analysis path
+    (this module) and the AI-generation path (generate.py delegates here).
+
+    Paced through the shared account-wide rate limiter and retried up to
+    max_retries times with backoff — a transient upload failure no longer
+    fails the image outright."""
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            rate_limiter.acquire()
+            with open(file_path, "rb") as f:
+                response = requests.post(
+                    UPLOAD_URL,
+                    headers=HEADERS_AUTH,
+                    files={"file": (os.path.basename(file_path), f, mime)},
+                    data={"uploadPath": upload_path},
+                    timeout=60,
+                )
+            response.raise_for_status()
+            data = response.json()
+            if not data.get("success"):
+                raise KieAnalysisError(f"Upload failed: {data}")
+            file_data = data["data"]
+            url = file_data.get("fileUrl") or file_data.get("url") or file_data.get("downloadUrl")
+            if not url:
+                raise KieAnalysisError(f"Could not find URL in upload response: {file_data}")
+            return url
+        except Exception as e:
+            last_error = e
+            print(f"  ⚠️ Upload attempt {attempt}/{max_retries} failed for "
+                  f"{os.path.basename(file_path)}: {e}")
+            if attempt < max_retries:
+                time.sleep(2 * attempt)
+    raise last_error
 
 
 def _extract_response_text(data: dict) -> str | None:
@@ -197,13 +276,25 @@ def analyze_product_image(image_url: str, timeout: int = 120) -> dict:
         "reasoning": {"effort": "low"},
     }
 
-    rate_limiter.acquire()
-    response = requests.post(
-        RESPONSES_URL,
-        headers={**HEADERS_AUTH, "Content-Type": "application/json"},
-        json=payload,
-        timeout=timeout,
-    )
+    # 429-aware retry: KIE rejects (does not queue) requests over the
+    # account's 20-per-10s cap — e.g. when several brand jobs' limiters
+    # collectively overshoot. Back off a full window per attempt instead of
+    # failing the image outright.
+    response = None
+    for attempt in range(1, 4):
+        rate_limiter.acquire()
+        response = requests.post(
+            RESPONSES_URL,
+            headers={**HEADERS_AUTH, "Content-Type": "application/json"},
+            json=payload,
+            timeout=timeout,
+        )
+        if response.status_code != 429:
+            break
+        wait = KIE_RATE_WINDOW_SECONDS * attempt
+        print(f"  ⚠️ KIE rate limit hit (429), attempt {attempt}/3 — waiting {wait}s")
+        if attempt < 3:
+            time.sleep(wait)
     response.raise_for_status()
     data = response.json()
     usage = data.get("usage") or {}

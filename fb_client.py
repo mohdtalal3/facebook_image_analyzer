@@ -14,8 +14,11 @@ Responsibilities:
 
 import os
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+import requests
 
 BASE_DIR = Path(__file__).parent
 FACEBOOK_PKG_DIR = BASE_DIR / "facebook"
@@ -235,43 +238,58 @@ def fetch_single_post_images(media_id: str, post_id: str, out_dir: str, cookies:
 
     Stops early once `max_images` have been downloaded (None = no limit).
     Returns a list of saved absolute file paths.
-    """
+
+    Two-step like download_pending_post_images(): the album walk itself is
+    sequential (each next media node only comes from the previous GraphQL
+    response, retried 3x on transient failure), but no bytes are downloaded
+    during the walk — every discovered URL is collected first, then all
+    downloads run concurrently via a small thread pool
+    (constants.IMAGE_DOWNLOAD_WORKERS), each with its own pre-assigned image
+    index so filenames stay post_id.jpg / post_id_2.jpg / etc regardless of
+    completion order."""
     os.makedirs(out_dir, exist_ok=True)
-    saved = []
+    image_urls: list[str] = []
     current_node = media_id
     visited = set()
-    image_count = 0
 
     while current_node and current_node not in visited:
-        if max_images is not None and image_count >= max_images:
+        if max_images is not None and len(image_urls) >= max_images:
             break
         visited.add(current_node)
         payload = single_post_image.build_payload(current_node, post_id, cookies)
 
-        import requests
-        r = requests.post(
-            single_post_image.GRAPHQL_URL,
-            headers=single_post_image.HEADERS,
-            data=payload,
-            cookies=cookies,
-            proxies=single_post_image.PROXIES,
-            timeout=30,
-        )
+        r = None
+        for attempt in range(1, 4):  # 3 attempts before giving up on this node
+            try:
+                resp = requests.post(
+                    single_post_image.GRAPHQL_URL,
+                    headers=single_post_image.HEADERS,
+                    data=payload,
+                    cookies=cookies,
+                    proxies=single_post_image.PROXIES,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    r = resp
+                    break
+                print(f"  ⚠️ Attempt {attempt}/3: Status {resp.status_code} fetching media node")
+            except Exception as e:
+                print(f"  ⚠️ Attempt {attempt}/3: {e} fetching media node")
+            if attempt < 3:
+                time.sleep(attempt * 2)
+        if r is None:
+            break
+
         cleaned_blocks = single_post_image.process_raw_graphql(r.text)
         if not cleaned_blocks:
             break
 
-        image_url = None
         for block in cleaned_blocks:
             if "currMedia" in block:
                 image_url = block["currMedia"].get("image", {}).get("uri")
+                if image_url:
+                    image_urls.append(image_url)
                 break
-
-        if image_url:
-            image_count += 1
-            filename = single_post_image.download_image(image_url, out_dir, post_id, image_count)
-            if filename:
-                saved.append(os.path.join(out_dir, filename))
 
         next_node = None
         for block in cleaned_blocks:
@@ -283,4 +301,17 @@ def fetch_single_post_images(media_id: str, post_id: str, out_dir: str, cookies:
 
         current_node = next_node
 
-    return saved
+    saved: list[str | None] = [None] * len(image_urls)
+    if image_urls:
+        with ThreadPoolExecutor(max_workers=min(IMAGE_DOWNLOAD_WORKERS, len(image_urls))) as executor:
+            futures = {
+                executor.submit(single_post_image.download_image, url, out_dir, post_id, i + 1): i
+                for i, url in enumerate(image_urls)
+            }
+            for future in as_completed(futures):
+                i = futures[future]
+                filename = future.result()
+                if filename:
+                    saved[i] = os.path.join(out_dir, filename)
+
+    return [p for p in saved if p]

@@ -23,6 +23,7 @@ Usage (normally launched by job_runner.py, not by hand):
 import argparse
 import json
 import os
+from datetime import date, timedelta
 from html import escape
 from pathlib import Path
 
@@ -33,6 +34,9 @@ from wordpress_publisher import WordPressPublisher
 
 # Load .env from project root (WP_URL_RS/... or WP_URL/... per publish target)
 load_dotenv(Path(__file__).resolve().parent / ".env")
+
+WEEKDAY_INDEX = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+                 "friday": 4, "saturday": 5, "sunday": 6}
 
 PUBLISH_TARGETS = {
     "retailshout": {
@@ -263,12 +267,36 @@ def build_page_html(items: list[tuple], brand: str) -> str:
     return html
 
 
+def build_page_title(brand: str, template: str | None = None,
+                     week_start_day: str | None = None, today=None) -> str:
+    """Page title for a brand's weekly finds update. Per-brand config comes
+    from the workspace (brands[].page_title template + brands[].week_start
+    day); placeholders {brand} and {date_range} are substituted. The week
+    window defaults to Friday → Thursday (ALDI's ad-week); Publix etc. can
+    set their own start day. Default template:
+    "Just Spotted at ALDI: This Week's Food Finds Everyone's Grabbing (9/11 – 9/17)"."""
+    today = today or date.today()
+    start_idx = WEEKDAY_INDEX.get((week_start_day or "friday").strip().lower(), 4)
+    days_since_start = (today.weekday() - start_idx) % 7
+    week_start = today - timedelta(days=days_since_start)
+    week_end = week_start + timedelta(days=6)
+    date_range = f"{week_start.month}/{week_start.day} – {week_end.month}/{week_end.day}"
+    tpl = (template or "").strip() or \
+        "Just Spotted at {brand}: This Week’s Food Finds Everyone’s Grabbing ({date_range})"
+    return tpl.replace("{brand}", brand).replace("{date_range}", date_range)
+
+
 def publish_brand(parent_job_id: str, brand: str, brand_slug: str, page_id: str,
                   publish_target: str, output_root: str = "output",
-                  status: str = "draft") -> tuple[bool, str]:
+                  status: str = "draft", page_title: str | None = None,
+                  week_start_day: str | None = None) -> tuple[bool, str]:
     """Publish one brand's food images from a completed scrape job's output.
-    Returns (success, summary message). Called by run_brand_job.py (the
-    per-brand sub-workflow) and by this file's CLI."""
+    `page_title` is the workspace's per-brand title template ({brand} and
+    {date_range} placeholders); `week_start_day` shifts the date window
+    (e.g. 'friday' for ALDI, 'tuesday' for Publix). Both default to the
+    generic template + Friday window. Returns (success, summary message).
+    Called by run_brand_job.py (the per-brand sub-workflow) and by this
+    file's CLI."""
     target = PUBLISH_TARGETS.get(publish_target) or PUBLISH_TARGETS["retailshout"]
     wp_url = os.environ.get(target["env"][0])
     wp_username = os.environ.get(target["env"][1])
@@ -324,10 +352,14 @@ def publish_brand(parent_job_id: str, brand: str, brand_slug: str, page_id: str,
     print(f"\n🎨 Building page HTML ({len(items)} item(s))...")
     html = build_page_html(items, brand)
 
+    page_title = build_page_title(brand, template=page_title,
+                                  week_start_day=week_start_day)
     print(f"\n📤 Updating WordPress page {page_id} as {status.upper()}...")
+    print(f"   Title: {page_title}")
     success = publisher.update_page(
         page_id=int(page_id),
         content=html,
+        title=page_title,
         status=status,
         try_page_first=True,
         update_date=(status == "publish"),

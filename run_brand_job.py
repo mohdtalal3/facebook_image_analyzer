@@ -30,14 +30,23 @@ import difflib
 import json
 import shutil
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import brand_mapping
 import fb_client
+import generate
+import kie_vision
 import scrapers
-from constants import DEDUPE_PRODUCTS, DEDUPE_THRESHOLD, FETCH_COMMENTS, MAX_IMAGES_PER_POST, PRICE_ON_IMAGE, SCRAPER_ANALYSIS
+from constants import (
+    AI_IMAGE_MAX_BYTES, DEDUPE_PRODUCTS, DEDUPE_THRESHOLD,
+    FETCH_COMMENTS, GENERATE_AI_IMAGES, MAX_IMAGES_PER_POST, PRICE_ON_IMAGE,
+    SCRAPER_ANALYSIS, SCRAPER_WORKERS,
+)
 from data_store import load_fb_auth
+from image_pipeline import compress_under_limit
 from price_overlay import overlay_price_on_image
 
 from run_facebook import (
@@ -223,43 +232,56 @@ def enrich_food_images_with_scrapes(job_dir: Path, brand: str, brand_slug: str) 
     print("\n" + "=" * 70)
     print(f"SCRAPER ANALYSIS — looking up {len(to_scrape)} product(s) on {brand}")
     print("=" * 70)
-    try:
-        searcher.warmup()
-    except Exception as e:
-        print(f"  ⚠️  Scraper warmup failed: {e}")
 
     enriched = 0
-    food_images_dir = job_dir / brand_slug / "food" / "images"
-    for filename, entry in analysis.items():
-        product_name = entry.get("product_name")
-        if not product_name:
-            continue
-        if entry.get("scraped"):
-            continue  # already enriched in a previous run — don't re-scrape / re-badge
+    pending = [(fn, entry) for fn, entry in analysis.items()
+               if entry.get("product_name") and not entry.get("scraped")]
+
+    # Parallel keyword scraping: SCRAPER_WORKERS threads search concurrently.
+    # Each thread gets its OWN searcher (fresh curl_cffi session — sessions
+    # are not thread-safe), warmed once per thread. Results are merged back
+    # into the analysis dict in the main thread, keyed by filename, so the
+    # JSON write below stays identical to the sequential version.
+    thread_local = threading.local()
+
+    def _thread_searcher():
+        s = getattr(thread_local, "searcher", None)
+        if s is None:
+            s = scrapers.get_searcher(brand)
+            try:
+                s.warmup()
+            except Exception as e:
+                print(f"  ⚠️  Scraper warmup failed: {e}")
+            thread_local.searcher = s
+        return s
+
+    def _scrape_one(item):
+        filename, entry = item
+        thread_searcher = _thread_searcher()
         try:
-            result = searcher.search(product_name)
+            result = thread_searcher.search(entry.get("product_name"))
         except Exception as e:
-            print(f"  ⚠️  Scrape failed for {filename} ({product_name!r}): {e}")
+            print(f"  ⚠️  Scrape failed for {filename} ({entry.get('product_name')!r}): {e}")
             result = None
-        if result:
-            entry["scraped"] = {
-                "name": result.get("name"),
-                "price": result.get("price"),
-                "size": result.get("size"),
-                "description": result.get("description"),
-                "product_url": result.get("product_url"),
-            }
-            enriched += 1
-            print(f"  🔗 {filename} → {result.get('name')!r} — {result.get('price') or 'price not listed'}")
-            price = result.get("price")
-            if price and PRICE_ON_IMAGE:
-                img_path = food_images_dir / filename
-                if img_path.exists() and overlay_price_on_image(img_path, price):
-                    entry["price_overlaid"] = True
-                    print(f"  🏷️  Price {price} stamped onto {filename}")
-        else:
-            print(f"  🚫 {filename} — no product match for {product_name!r}")
-        time.sleep(1)  # be polite to the retailer's site
+        time.sleep(0.5)  # be polite to the retailer's site
+        return item, result
+
+    if pending:
+        print(f"  🧵 Scraping {len(pending)} keyword(s) with {SCRAPER_WORKERS} parallel thread(s)")
+    with ThreadPoolExecutor(max_workers=SCRAPER_WORKERS) as executor:
+        for (filename, entry), result in executor.map(_scrape_one, pending):
+            if result:
+                entry["scraped"] = {
+                    "name": result.get("name"),
+                    "price": result.get("price"),
+                    "size": result.get("size"),
+                    "description": result.get("description"),
+                    "product_url": result.get("product_url"),
+                }
+                enriched += 1
+                print(f"  🔗 {filename} → {result.get('name')!r} — {result.get('price') or 'price not listed'}")
+            else:
+                print(f"  🚫 {filename} — no product match for {entry.get('product_name')!r}")
 
     try:
         analysis_file.write_text(json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -267,6 +289,138 @@ def enrich_food_images_with_scrapes(job_dir: Path, brand: str, brand_slug: str) 
         print(f"  ⚠️  Could not write enriched analysis back to {analysis_file}: {e}")
     print(f"✅ Scraper analysis: enriched {enriched}/{len(to_scrape)} food image(s).")
     return enriched
+
+
+def apply_price_badges(job_dir: Path, brand_slug: str) -> int:
+    """Stamp scraped prices onto the food images (used when AI generation is
+    off — the badge goes on the original). Marks entries price_overlaid so
+    images never get double-badged on re-runs. Returns the number badged."""
+    if not PRICE_ON_IMAGE:
+        return 0
+    analysis_file = job_dir / brand_slug / "food" / "image_analysis.json"
+    if not analysis_file.exists():
+        return 0
+    try:
+        analysis = json.loads(analysis_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"⚠️  Could not read {analysis_file}: {e}")
+        return 0
+
+    images_dir = job_dir / brand_slug / "food" / "images"
+    badged = 0
+    for filename, entry in analysis.items():
+        if entry.get("price_overlaid"):
+            continue
+        price = (entry.get("scraped") or {}).get("price")
+        img_path = images_dir / filename
+        if price and img_path.exists() and overlay_price_on_image(img_path, price):
+            entry["price_overlaid"] = True
+            badged += 1
+            print(f"  🏷️  Price {price} stamped onto {filename}")
+
+    if badged:
+        try:
+            analysis_file.write_text(json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception as e:
+            print(f"  ⚠️  Could not write price-overlay flags back to {analysis_file}: {e}")
+    return badged
+
+
+def render_image_prompt(template: str, brand: str, entry: dict) -> str:
+    """Prepare a workspace per-brand image prompt for sending: strip comment
+    lines (lines starting with '#'), then substitute {store} and
+    {product_name} from the KIE analysis + scraped data. Unknown placeholders
+    are left untouched."""
+    product_name = entry.get("product_name") or (entry.get("scraped") or {}).get("name") or ""
+    body = "\n".join(
+        line for line in template.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    body = body.replace("{store}", brand).replace("{product_name}", product_name)
+    return body.strip()
+
+
+def generate_ai_images(job_dir: Path, brand: str, brand_slug: str, image_prompt: str | None = None) -> int:
+    """AI image generation stage — the last step before publishing. For every
+    food image, create a new AI-generated version via KIE (generate.py,
+    nano-banana-pro) and use it for publishing instead of the original: the
+    upload copy and the AI result are both kept under
+    constants.AI_IMAGE_MAX_BYTES (quality-first compression,
+    image_pipeline.compress_under_limit — no unnecessary quality loss). The
+    price badge is applied AFTER generation — onto the AI image when one was
+    produced, otherwise onto the original. Prompt: the workspace's per-brand
+    image prompt (--image-prompt) — brands without one skip generation.
+    Toggled by constants.GENERATE_AI_IMAGES. Returns the number of images
+    regenerated. Never raises per image — a failure just publishes the
+    original."""
+    if not GENERATE_AI_IMAGES:
+        apply_price_badges(job_dir, brand_slug)
+        return 0
+
+    analysis_file = job_dir / brand_slug / "food" / "image_analysis.json"
+    if not analysis_file.exists():
+        return 0
+    try:
+        analysis = json.loads(analysis_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"⚠️  Could not read {analysis_file}: {e}")
+        return 0
+
+    images_dir = job_dir / brand_slug / "food" / "images"
+    entries = {fn: e for fn, e in analysis.items() if (images_dir / fn).exists()}
+    if not entries:
+        return 0
+
+    prompt_template = (image_prompt or "").strip()
+    if not prompt_template:
+        print("⚠️  No AI image prompt configured for this brand (workspace image_prompt) — skipping AI generation.")
+        apply_price_badges(job_dir, brand_slug)
+        return 0
+    scratch_dir = job_dir / f"_ai_{brand_slug}"
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+
+    print("\n" + "=" * 70)
+    print(f"AI IMAGE GENERATION — regenerating {len(entries)} food image(s) via KIE nano-banana-pro")
+    print("=" * 70)
+
+    generated = 0
+    for filename, entry in entries.items():
+        img_path = images_dir / filename
+        price = (entry.get("scraped") or {}).get("price")
+
+        if not entry.get("ai_image"):  # already generated in a previous run — don't regenerate
+            try:
+                upload_path = scratch_dir / f"upload_{filename}"
+                shutil.copyfile(img_path, upload_path)
+                compress_under_limit(str(upload_path), AI_IMAGE_MAX_BYTES)
+                public_url = generate.upload_image(str(upload_path))
+                kie_vision.rate_limiter.acquire()
+                prompt = render_image_prompt(prompt_template, brand, entry)
+                task_id = generate.create_task(public_url, prompt=prompt)
+                result_url = generate.poll_task(task_id)
+                result_path = scratch_dir / f"result_{filename}"
+                generate.download_image(result_url, str(result_path))
+                compress_under_limit(str(result_path), AI_IMAGE_MAX_BYTES)
+                shutil.move(str(result_path), str(img_path))
+                entry["ai_image"] = True
+                generated += 1
+                print(f"  🎨 {filename} — AI image generated")
+            except Exception as e:
+                print(f"  ⚠️  AI generation failed for {filename}: {e} — publishing the original")
+
+        # Price badge goes on the AI image when one exists, else the original.
+        if price and PRICE_ON_IMAGE and not entry.get("price_overlaid"):
+            if overlay_price_on_image(img_path, price):
+                entry["price_overlaid"] = True
+                print(f"  🏷️  Price {price} stamped onto {filename}")
+
+    shutil.rmtree(scratch_dir, ignore_errors=True)
+    try:
+        analysis_file.write_text(json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        print(f"  ⚠️  Could not write AI-image flags back to {analysis_file}: {e}")
+    print(f"✅ AI image generation: {generated}/{len(entries)} image(s) regenerated.")
+    return generated
 
 
 def main():
@@ -278,6 +432,12 @@ def main():
     parser.add_argument("--page-id", default=None, help="WordPress page ID — publishing is skipped when absent")
     parser.add_argument("--publish-target", default="retailshout", choices=["retailshout", "aos"])
     parser.add_argument("--output-root", default="output")
+    parser.add_argument("--image-prompt", default=None,
+                        help="Per-brand AI image prompt (workspace config) — brands without one skip AI generation")
+    parser.add_argument("--page-title", default=None,
+                        help="Per-brand WordPress page title template ({brand}/{date_range} placeholders, workspace config)")
+    parser.add_argument("--week-start", default=None,
+                        help="Week start day for the page title's date window (e.g. friday for ALDI, tuesday for Publix)")
     args = parser.parse_args()
 
     posts_file = Path(args.output_root) / args.parent_job_id / args.brand_slug / "posts.json"
@@ -341,6 +501,7 @@ def main():
         print("=" * 70)
         dedupe_food_images(job_dir, args.brand_slug)
         enrich_food_images_with_scrapes(job_dir, args.brand, args.brand_slug)
+        generate_ai_images(job_dir, args.brand, args.brand_slug, image_prompt=args.image_prompt)
         ok, message = publish_brand(
             parent_job_id=args.parent_job_id,
             brand=args.brand,
@@ -349,6 +510,8 @@ def main():
             publish_target=args.publish_target,
             output_root=args.output_root,
             status="draft",
+            page_title=args.page_title,
+            week_start_day=args.week_start,
         )
         if not ok:
             print(f"❌ Publish failed: {message}")

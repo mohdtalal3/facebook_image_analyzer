@@ -116,41 +116,47 @@ def retry_request(url, headers, data, proxies, max_retries=5):
     raise Exception(f"Failed after {max_retries} attempts")
 
 
-def download_image(url, post_id, image_index=1, save_dir="group_post"):
-    """Download image from URL and save as {post_id}.jpg or {post_id}_2.jpg etc"""
+def download_image(url, post_id, image_index=1, save_dir="group_post", max_retries=3):
+    """Download image from URL and save as {post_id}.jpg or {post_id}_2.jpg etc.
+    Retries up to max_retries times with backoff before giving up (returns None)."""
     if not url or not post_id:
         return None
-    
-    try:
-        # Create post-specific directory
-        post_dir = os.path.join(save_dir, str(post_id))
-        os.makedirs(post_dir, exist_ok=True)
-        
-        # Get file extension from URL or default to .jpg
-        ext = ".jpg"
-        if ".png" in url.lower():
-            ext = ".png"
-        elif ".jpeg" in url.lower():
-            ext = ".jpeg"
-        
-        # Name as {post_id}.jpg or {post_id}_2.jpg etc
-        filename = f"{post_id}{ext}" if image_index == 1 else f"{post_id}_{image_index}{ext}"
-        filepath = os.path.join(post_dir, filename)
-        
-        # Download the image
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        
-        # Save the image
-        with open(filepath, 'wb') as f:
-            f.write(response.content)
-        
-        print(f"  📥 Downloaded image: {filename}")
-        return filename
-    
-    except Exception as e:
-        print(f"  ❌ Failed to download image: {str(e)}")
-        return None
+
+    # Create post-specific directory
+    post_dir = os.path.join(save_dir, str(post_id))
+    os.makedirs(post_dir, exist_ok=True)
+
+    # Get file extension from URL or default to .jpg
+    ext = ".jpg"
+    if ".png" in url.lower():
+        ext = ".png"
+    elif ".jpeg" in url.lower():
+        ext = ".jpeg"
+
+    # Name as {post_id}.jpg or {post_id}_2.jpg etc
+    filename = f"{post_id}{ext}" if image_index == 1 else f"{post_id}_{image_index}{ext}"
+    filepath = os.path.join(post_dir, filename)
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+
+            # Save the image
+            with open(filepath, 'wb') as f:
+                f.write(response.content)
+
+            print(f"  📥 Downloaded image: {filename}")
+            return filename
+        except Exception as e:
+            print(f"  ⚠️ Download attempt {attempt}/{max_retries} failed for {filename}: {e}")
+            if attempt < max_retries:
+                wait_time = attempt * 2
+                print(f"  ⏳ Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+
+    print(f"  ❌ Failed to download image after {max_retries} attempts: {filename}")
+    return None
 
 
 def fetch_remaining_images(last_media_id, post_id, current_image_count, save_dir="group_post", max_images=None,
@@ -208,10 +214,21 @@ def fetch_remaining_images(last_media_id, post_id, current_image_count, save_dir
         }
         
         try:
-            r = requests.post(GRAPHQL_URL, headers=HEADERS_PHOTO, data=payload, proxies=PROXIES, cookies=COOKIES, timeout=30)
-            if r.status_code != 200:
+            r = None
+            for attempt in range(1, 4):  # 3 attempts before giving up on this node
+                try:
+                    resp = requests.post(GRAPHQL_URL, headers=HEADERS_PHOTO, data=payload, proxies=PROXIES, cookies=COOKIES, timeout=30)
+                    if resp.status_code == 200:
+                        r = resp
+                        break
+                    print(f"  ⚠️ Attempt {attempt}/3: Status {resp.status_code} fetching next image")
+                except Exception as e:
+                    print(f"  ⚠️ Attempt {attempt}/3: {e} fetching next image")
+                if attempt < 3:
+                    time.sleep(attempt * 2)
+            if r is None:
                 break
-            
+
             # Parse response
             cleaned_blocks = parse_fb_response(r.text)
             if not cleaned_blocks:
@@ -842,11 +859,18 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
                         print(f"  ⏭️  Skipping already scraped post: {temp_post_id}")
                         continue
 
-                post_data = extract_post_data(
-                    story_node, GROUP_NAME, published_at=published_at, save_root=save_root,
-                    max_images=max_images_per_post, download_images=download_images,
-                    text_filter=text_filter, fetch_extra_images=fetch_extra_images,
-                )
+                # Per-post failure isolation: one malformed node crashing
+                # extract_post_data() must not kill the whole group scrape —
+                # the post is skipped, pagination continues.
+                try:
+                    post_data = extract_post_data(
+                        story_node, GROUP_NAME, published_at=published_at, save_root=save_root,
+                        max_images=max_images_per_post, download_images=download_images,
+                        text_filter=text_filter, fetch_extra_images=fetch_extra_images,
+                    )
+                except Exception as e:
+                    print(f"  ⚠️ Failed to extract post {temp_post_id}, skipping: {e}")
+                    continue
                 if post_data:
                     batch_posts.append(post_data)
                     all_posts.append(post_data)

@@ -46,9 +46,10 @@ def _brands_from_form() -> list[dict]:
     """Parse the workspace's brand configurations out of the JSON payload
     the workspace form builds from its dynamic brand rows. Each entry:
     {"brand": canonical name, "page_id": str, "publish_target":
-    "retailshout"|"aos", "image_prompt": str}. Unknown brand names are
-    dropped; everything else is saved as-is (page_id/image_prompt may be
-    empty — publishing just skips brands without a page_id)."""
+    "retailshout"|"aos", "image_prompt": str, "page_title": str,
+    "week_start": day name}. Unknown brand names are dropped; everything
+    else is saved as-is (page_id/image_prompt may be empty — publishing
+    just skips brands without a page_id)."""
     raw = request.form.get("brands_json", "").strip()
     if not raw:
         return []
@@ -62,11 +63,16 @@ def _brands_from_form() -> list[dict]:
         if brand not in brand_mapping.BRAND_KEYWORDS:
             continue
         target = entry.get("publish_target")
+        week_start = (entry.get("week_start") or "").strip().lower()
         brands.append({
             "brand": brand,
             "page_id": str(entry.get("page_id") or "").strip(),
             "publish_target": target if target in ("retailshout", "aos") else "retailshout",
             "image_prompt": (entry.get("image_prompt") or "").strip(),
+            "page_title": (entry.get("page_title") or "").strip(),
+            "week_start": week_start if week_start in (
+                "monday", "tuesday", "wednesday", "thursday", "friday",
+                "saturday", "sunday") else "friday",
         })
     return brands
 

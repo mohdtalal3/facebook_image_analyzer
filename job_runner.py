@@ -134,6 +134,7 @@ def _launch_brand_jobs(parent_job_id: str, workspace_id: str):
         return
 
     brand_configs = ws.get("brands") or []
+    pending: list[tuple] = []   # (brand, brand_slug, brand_config, page_id, post_count)
     if brand_configs:
         for brand_config in brand_configs:
             brand = brand_config.get("brand")
@@ -144,8 +145,8 @@ def _launch_brand_jobs(parent_job_id: str, workspace_id: str):
             if not posts:
                 append_log(parent_job_id, f"[brand] {brand}: no posts matched this brand — skipping brand job")
                 continue
-            launch_brand_job(ws, parent_job_id, brand, brand_slug, brand_config,
-                             (brand_config.get("page_id") or "").strip() or None, len(posts))
+            pending.append((brand, brand_slug, brand_config,
+                            (brand_config.get("page_id") or "").strip() or None, len(posts)))
     else:
         # No brands configured on the workspace: launch a processing job per
         # brand folder the discovery phase produced (publishing disabled —
@@ -158,8 +159,15 @@ def _launch_brand_jobs(parent_job_id: str, workspace_id: str):
                 count = 0
             if not count:
                 continue
-            launch_brand_job(ws, parent_job_id, brand_slug, brand_slug,
-                             {"publish_target": "retailshout"}, None, count)
+            pending.append((brand_slug, brand_slug, {"publish_target": "retailshout"}, None, count))
+
+    # KIE's account-wide rate budget is enforced by kie_vision's shared
+    # file-based limiter (data/kie_rate_window.json) — every concurrent
+    # KIE-calling process draws from the same window, so no per-job split is
+    # needed and a finished job's capacity is automatically freed.
+    for brand, brand_slug, brand_config, page_id, count in pending:
+        launch_brand_job(ws, parent_job_id, brand, brand_slug, brand_config,
+                         page_id, count)
 
 
 def _read_brand_manifest(parent_job_id: str, brand_slug: str):
@@ -181,6 +189,7 @@ def launch_brand_job(ws: dict, parent_job_id: str, brand: str, brand_slug: str,
     with its own log."""
     job_id = str(uuid.uuid4())
     publish_target = brand_config.get("publish_target") or "retailshout"
+    image_prompt = (brand_config.get("image_prompt") or "").strip() or None
     job = {
         "id": job_id,
         "workspace_id": ws["id"],
@@ -217,6 +226,14 @@ def launch_brand_job(ws: dict, parent_job_id: str, brand: str, brand_slug: str,
     ]
     if page_id:
         cmd += ["--page-id", page_id]
+    if image_prompt:
+        cmd += ["--image-prompt", image_prompt]
+    page_title = (brand_config.get("page_title") or "").strip() or None
+    if page_title:
+        cmd += ["--page-title", page_title]
+    week_start = (brand_config.get("week_start") or "").strip().lower() or None
+    if week_start:
+        cmd += ["--week-start", week_start]
 
     ts = datetime.now().strftime("%H:%M:%S")
     append_log(job_id, f"[{ts}] ── Brand job {job_id[:8]}... created ────────────────────")

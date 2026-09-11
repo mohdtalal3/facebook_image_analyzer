@@ -134,6 +134,19 @@
           <textarea class="form-control form-control-sm brand-prompt" rows="2"
                     placeholder="Per-brand image prompt (optional for now)">${data.image_prompt || ''}</textarea>
         </div>
+        <div class="col-md-8">
+          <label class="form-label" style="font-size:12px;">Page Title <span class="text-muted">(optional — {brand} and {date_range} are substituted)</span></label>
+          <input type="text" class="form-control form-control-sm brand-page-title"
+                 placeholder="Just Spotted at {brand}: This Week’s Food Finds Everyone’s Grabbing ({date_range})"
+                 value="${data.page_title || ''}">
+        </div>
+        <div class="col-md-4">
+          <label class="form-label" style="font-size:12px;">Week Starts <span class="text-muted">(for {date_range})</span></label>
+          <select class="form-select form-select-sm brand-week-start">
+            ${['friday','monday','tuesday','wednesday','thursday','saturday','sunday'].map(d =>
+              `<option value="${d}" ${(data.week_start || 'friday') === d ? 'selected' : ''}>${d.charAt(0).toUpperCase() + d.slice(1)}</option>`).join('')}
+          </select>
+        </div>
       </div>`;
 
     row.querySelector('.remove-brand-btn').addEventListener('click', () => row.remove());
@@ -147,6 +160,8 @@
       page_id: row.querySelector('.brand-page-id').value.trim(),
       publish_target: row.querySelector('.brand-target').value,
       image_prompt: row.querySelector('.brand-prompt').value.trim(),
+      page_title: row.querySelector('.brand-page-title').value.trim(),
+      week_start: row.querySelector('.brand-week-start').value,
     })).filter(b => b.brand);
     brandsJson.value = JSON.stringify(brands);
   }

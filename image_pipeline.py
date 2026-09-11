@@ -49,6 +49,42 @@ def process_image(original_path: str, processed_path: str, max_bytes: int = MAX_
     return processed_path
 
 
+def compress_under_limit(image_path: str, max_bytes: int,
+                         start_quality: int = 92, min_quality: int = 40) -> bool:
+    """Re-save a COLOR image in place as JPEG only while it exceeds `max_bytes`
+    — quality is reduced first (starting high, per the no-quality-drop
+    requirement), mild downscaling only as a last resort. No grayscale.
+    Returns True if the file was rewritten; a no-op when already small enough.
+    Raises on unreadable/corrupt input."""
+    if os.path.getsize(image_path) <= max_bytes:
+        return False
+
+    with Image.open(image_path) as im:
+        rgb = im.convert("RGB")
+        quality = start_quality
+        scale = 1.0
+        working = rgb
+
+        while True:
+            working.save(image_path, "JPEG", quality=quality, optimize=True)
+            if os.path.getsize(image_path) <= max_bytes:
+                break
+            if quality > min_quality:
+                quality -= 8
+                continue
+            if scale > 0.5:
+                scale -= 0.1
+                w, h = rgb.size
+                working = rgb.resize(
+                    (max(50, int(w * scale)), max(50, int(h * scale))), Image.LANCZOS
+                )
+                continue
+            # Already at minimum quality/scale — accept whatever we have.
+            break
+
+    return True
+
+
 def process_post_images(original_paths: list[str], processed_dir: str) -> dict[str, str | None]:
     """Process a batch of images. Returns {original_path: processed_path or None on failure}."""
     results = {}

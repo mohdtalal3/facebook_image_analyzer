@@ -24,6 +24,9 @@ SCRAPER_ANALYSIS = True         # after KIE analysis, look each FOOD image's pro
                                 # False, publishing uses only the KIE image-analysis data.
 PRICE_ON_IMAGE = True           # stamp the scraped price onto the food image itself as a red
                                 # rounded badge (top-right, price_overlay.py) before upload
+SCRAPER_WORKERS = 5             # parallel keyword-search threads in enrich_food_images_with_scrapes —
+                                # each thread gets its own searcher session (curl_cffi sessions
+                                # are not thread-safe), so N keywords scrape concurrently
 
 # ── run_brand_job.py product dedup (before scraper analysis + publishing) ──
 DEDUPE_PRODUCTS = True          # remove duplicate products from food/image_analysis.json after
@@ -32,6 +35,16 @@ DEDUPE_PRODUCTS = True          # remove duplicate products from food/image_anal
                                 # WordPress publisher never see them
 DEDUPE_THRESHOLD = 0.90         # normalized-name similarity ratio (difflib) above which two
                                 # product names count as duplicates
+
+# ── run_brand_job.py AI image generation (final stage, after dedup + scraper analysis) ──
+GENERATE_AI_IMAGES = True       # send each food image to KIE (nano-banana-pro via generate.py)
+                                # to create a new AI-generated image; the AI image replaces the
+                                # original for publishing. When False, the original image is
+                                # published (and gets the price badge, if PRICE_ON_IMAGE).
+                                # The prompt comes from the workspace's per-brand image_prompt
+                                # config (--image-prompt); brands without one skip generation.
+AI_IMAGE_MAX_BYTES = 500 * 1024  # images are compressed under this size before upload to KIE
+                                # and the AI result is compressed under it before publishing
 
 # ── image_pipeline.py ──
 MAX_PROCESSED_BYTES = 200 * 1024  # 200 KB cap for processed (grayscale) images
