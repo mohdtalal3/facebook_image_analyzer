@@ -59,4 +59,4 @@ KIE_RATE_WINDOW_SECONDS = 10
 ZIP_MAX_AGE_SECONDS = 24 * 3600   # sweep exports older than this on every new build
 
 # ── brand filtering / output organization (run_facebook.py) ──
-MIN_IMAGES_FOR_KEEP = 2   # a post needs more than 1 image to be kept (see brand_mapping.py)
+MIN_IMAGES_FOR_KEEP = 1   # a post needs more than 1 image to be kept (see brand_mapping.py)
