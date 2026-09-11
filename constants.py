@@ -12,7 +12,7 @@ FETCH_COMMENTS = False          # skip comment scraping — not needed right now
 ANALYZE_IMAGES = True  # run the KIE upload+analyze workflow at all —
                                  # when False, images are still downloaded/processed
                                  # but never sent to KIE (analysis_status: "skipped")
-MAX_IMAGES_PER_POST = 2      # cap images downloaded/processed/analyzed per post — for testing
+MAX_IMAGES_PER_POST = 1      # cap images downloaded/processed/analyzed per post — for testing
 IMAGE_WORKERS = 5               # concurrent per-post image processing/analysis threads
 IMAGE_DOWNLOAD_WORKERS = 5      # concurrent per-post image *download* threads (fb_client.download_pending_post_images)
 POSTS_PER_SOURCE_DEFAULT = 500  # default --posts-per-source limit for page/group fetch
