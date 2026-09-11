@@ -12,7 +12,14 @@
         <span id="statusText">{{ job.status | capitalize }}</span>
       </span>
     </h1>
-    <small style="color:#64748b;font-size:12px;">ID: {{ job.id }}</small>
+    <small style="color:#64748b;font-size:12px;">
+      ID: {{ job.id }}
+      {% if job.job_kind in ('brand', 'publish') %}
+        &middot; <span class="badge" style="background:#fef3c7;color:#92400e;font-weight:600;font-size:10px;">
+          <i class="bi bi-cloud-upload me-1"></i>Brand: {{ job.brand }}
+        </span>
+      {% endif %}
+    </small>
   </div>
   <div class="d-flex gap-2">
     <a href="{{ url_for('job_download', job_id=job.id) }}" class="btn btn-sm btn-success" id="downloadBtn"
@@ -85,7 +92,38 @@
   </div>
 </div>
 
-<!-- Sources list -->
+<!-- Sources list (scrape jobs) / brand job details (brand jobs) -->
+{% if job.job_kind in ('brand', 'publish') %}
+<div class="card mb-4">
+  <div class="card-header"><i class="bi bi-cloud-upload me-2" style="color:#d97706"></i>Brand Job Details</div>
+  <div class="card-body p-0">
+    <table class="table mb-0" style="font-size:13px;">
+      <tr>
+        <td class="ps-4 text-muted" style="width:35%;padding:10px 0 10px 16px;">Brand</td>
+        <td class="pe-4" style="padding:10px 16px 10px 0;font-weight:600;">{{ job.brand }}</td>
+      </tr>
+      <tr>
+        <td class="ps-4 text-muted" style="padding:10px 0 10px 16px;">Publish Target</td>
+        <td class="pe-4" style="padding:10px 16px 10px 0;font-weight:600;">{{ job.publish_target }}</td>
+      </tr>
+      <tr>
+        <td class="ps-4 text-muted" style="padding:10px 0 10px 16px;">WordPress Page ID</td>
+        <td class="pe-4" style="padding:10px 16px 10px 0;">
+          {% if job.page_id %}<code>{{ job.page_id }}</code>{% else %}<span class="text-muted">Not set — publishing skipped</span>{% endif %}
+        </td>
+      </tr>
+      {% if job.parent_job_id %}
+      <tr>
+        <td class="ps-4 text-muted" style="padding:10px 0 10px 16px;">Source Scrape Job</td>
+        <td class="pe-4" style="padding:10px 16px 10px 0;">
+          <a href="{{ url_for('job_detail', job_id=job.parent_job_id) }}">{{ job.parent_job_id[:8] }}…</a>
+        </td>
+      </tr>
+      {% endif %}
+    </table>
+  </div>
+</div>
+{% else %}
 <div class="card mb-4">
   <div class="card-header"><i class="bi bi-facebook me-2" style="color:#1877f2"></i>Sources ({{ job.sources | length }})</div>
   <div class="card-body p-0">
@@ -99,6 +137,7 @@
     {% endfor %}
   </div>
 </div>
+{% endif %}
 
 <!-- Log Viewer -->
 <div class="card">

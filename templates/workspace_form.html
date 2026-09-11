@@ -50,6 +50,21 @@
             </div>
           </div>
 
+          <div class="mb-4">
+            <label class="form-label">
+              <i class="bi bi-tags me-1"></i>Brands
+            </label>
+            <div class="form-text mb-2">
+              Choose which retailer brands this workspace tracks. Only posts matching these brands are scraped,
+              and each brand gets its own WordPress page ID, publish target, and image prompt.
+            </div>
+            <div id="brandRows"></div>
+            <button type="button" class="btn btn-sm btn-outline-primary mt-2" id="addBrandBtn">
+              <i class="bi bi-plus-lg me-1"></i>Add Brand
+            </button>
+            <input type="hidden" name="brands_json" id="brandsJson">
+          </div>
+
           <div class="d-flex gap-3 pt-2">
             <button type="submit" class="btn btn-primary px-4">
               <i class="bi bi-check-lg me-1"></i>
@@ -70,4 +85,80 @@
     </div>
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const ALL_BRANDS = {{ all_brands | tojson }};
+  const EXISTING_BRANDS = {{ (workspace.brands if workspace and workspace.brands else []) | tojson }};
+
+  const brandRows = document.getElementById('brandRows');
+  const brandsJson = document.getElementById('brandsJson');
+
+  function addBrandRow(data) {
+    data = data || {};
+    const row = document.createElement('div');
+    row.className = 'brand-row border rounded-3 p-3 mb-3';
+    row.style.background = '#f8fafc';
+    row.innerHTML = `
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <span style="font-weight:600;font-size:13px;color:#334155;">
+          <i class="bi bi-shop me-1" style="color:#3b82f6"></i>Brand
+        </span>
+        <button type="button" class="btn btn-sm btn-outline-danger py-0 px-2 remove-brand-btn" title="Remove brand">
+          <i class="bi bi-trash"></i>
+        </button>
+      </div>
+      <div class="row g-2">
+        <div class="col-md-4">
+          <label class="form-label" style="font-size:12px;">Brand <span class="text-danger">*</span></label>
+          <select class="form-select form-select-sm brand-select">
+            <option value="">Select brand…</option>
+            ${ALL_BRANDS.map(b => `<option value="${b}" ${data.brand === b ? 'selected' : ''}>${b}</option>`).join('')}
+          </select>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label" style="font-size:12px;">WordPress Page ID</label>
+          <input type="text" class="form-control form-control-sm brand-page-id" placeholder="e.g. 12345"
+                 value="${data.page_id || ''}">
+        </div>
+        <div class="col-md-5">
+          <label class="form-label" style="font-size:12px;">Publish Target</label>
+          <select class="form-select form-select-sm brand-target">
+            <option value="retailshout" ${data.publish_target !== 'aos' ? 'selected' : ''}>Retail Shout (retailshout.com)</option>
+            <option value="aos" ${data.publish_target === 'aos' ? 'selected' : ''}>AOS (aisleofshame.com)</option>
+          </select>
+        </div>
+        <div class="col-12">
+          <label class="form-label" style="font-size:12px;">Image Prompt <span class="text-muted">(saved for later use)</span></label>
+          <textarea class="form-control form-control-sm brand-prompt" rows="2"
+                    placeholder="Per-brand image prompt (optional for now)">${data.image_prompt || ''}</textarea>
+        </div>
+      </div>`;
+
+    row.querySelector('.remove-brand-btn').addEventListener('click', () => row.remove());
+    brandRows.appendChild(row);
+  }
+
+  function syncBrandsJson() {
+    const rows = [...brandRows.querySelectorAll('.brand-row')];
+    const brands = rows.map(row => ({
+      brand: row.querySelector('.brand-select').value,
+      page_id: row.querySelector('.brand-page-id').value.trim(),
+      publish_target: row.querySelector('.brand-target').value,
+      image_prompt: row.querySelector('.brand-prompt').value.trim(),
+    })).filter(b => b.brand);
+    brandsJson.value = JSON.stringify(brands);
+  }
+
+  document.getElementById('addBrandBtn').addEventListener('click', () => addBrandRow());
+  brandRows.addEventListener('change', syncBrandsJson);
+  brandRows.addEventListener('input', syncBrandsJson);
+
+  EXISTING_BRANDS.forEach(b => addBrandRow(b));
+  syncBrandsJson();
+
+  // Re-sync right before submit so the payload always matches the DOM
+  document.querySelector('form').addEventListener('submit', syncBrandsJson);
+</script>
 {% endblock %}

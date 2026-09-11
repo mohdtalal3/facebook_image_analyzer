@@ -51,75 +51,53 @@ class RateLimiter:
 
 rate_limiter = RateLimiter(KIE_MAX_REQUESTS_PER_WINDOW, KIE_RATE_WINDOW_SECONDS)
 
-PRODUCT_EXTRACTION_PROMPT = """Product Image Extraction Agent
+PRODUCT_EXTRACTION_PROMPT = """Analyze the provided product image and return:
 
-Analyze the provided product image and extract the following information:
+* Brand
+* Product name
+* Food/non-food classification
+* Subcategory
 
-Brand name
-Product name
-Food or non-food classification
+Inspect the entire image, including packaging, logos, labels, and visible text.
 
-Carefully inspect the entire image, including packaging, logos, labels, visible text, and the product itself.
+Rules:
 
-Rules
-Identify the brand name separately from the product name.
-Extract the most specific product name visible in the image, including flavor, variant, type, or version when clearly shown.
-Classify the product as either:
-food
-non_food
-Be accurate and do not guess or hallucinate information.
-If the brand cannot be confidently identified, return null.
-If the product name cannot be confidently identified, return null.
-If the food/non-food classification cannot be confidently determined, return null.
-Ignore prices, discounts, promotional offers, store names, and advertising slogans.
-Normalize capitalization and formatting where appropriate.
-Always identify only the primary product shown in the image.
-Return JSON only. Do not include explanations, markdown, comments, or any additional text.
+* Identify the brand and product separately.
+* Use the most specific product name visible, including flavor/variant when clear.
+* Only identify the primary product.
+* Do not guess or hallucinate.
+* Return null when information cannot be confidently identified.
+* Ignore prices, discounts, store names, and slogans.
+* Normalize capitalization and formatting.
 
-Food Classification
+Category:
 
-Use food for products intended for human consumption, including:
+* `food` = products intended for human consumption.
+* `non_food` = household, cleaning, personal care, cosmetics, pet products, paper products, electronics, clothing, toys, etc.
 
-Food
-Snacks
-Beverages
-Dairy
-Meat
-Produce
-Bakery
-Frozen food
-Canned food
-Cooking ingredients
+For `food`, choose exactly ONE subcategory:
 
-Use non_food for products such as:
+[
+"Bakery & Deli",
+"Dairy & Eggs",
+"Meat & Seafood",
+"Frozen Foods & Breakfast",
+"Snacks & Pantry Staples",
+"Beverages & Energy"
+]
 
-Cleaning products
-Household products
-Personal care
-Cosmetics
-Pet products
-Paper products
-Electronics
-Clothing
-Toys
-Other non-edible products
+If the product is `non_food` or the subcategory is unclear, return `null`.
 
-Required JSON Format
-{
-  "brand": "string or null",
-  "product_name": "string or null",
-  "category": "food or non_food or null"
-}
-
-Example:
+Return JSON only:
 
 {
-  "brand": "Coca-Cola",
-  "product_name": "Coca-Cola Zero Sugar",
-  "category": "food"
+"brand": "string or null",
+"product_name": "string or null",
+"category": "food or non_food or null",
+"subcategory": "string or null"
 }
 
-Accuracy is more important than completeness. If the image does not provide enough evidence, return null rather than guessing."""
+Accuracy is more important than completeness. Never guess."""
 
 
 class KieAnalysisError(Exception):
@@ -199,7 +177,8 @@ def _parse_json_block(text: str) -> dict:
 def analyze_product_image(image_url: str, timeout: int = 120) -> dict:
     """Call KIE GPT-5.6 Luna to extract brand/product/category from an image.
 
-    Returns {"brand": ..., "product_name": ..., "category": ...}.
+    Returns {"brand": ..., "product_name": ..., "category": ...,
+    "subcategory": ...}.
     Raises KieAnalysisError on any failure — caller is responsible for
     recording a failed-analysis placeholder instead of losing the post.
     """
@@ -242,6 +221,7 @@ def analyze_product_image(image_url: str, timeout: int = 120) -> dict:
         "brand": parsed.get("brand"),
         "product_name": parsed.get("product_name"),
         "category": parsed.get("category"),
+        "subcategory": parsed.get("subcategory"),
         "tokens_used": usage.get("total_tokens"),
         "credits_consumed": credits_consumed,
     }

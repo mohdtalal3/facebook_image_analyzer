@@ -121,6 +121,7 @@
       <thead>
         <tr>
           <th>Workspace</th>
+          <th>Type</th>
           <th>Status</th>
           <th>Sources</th>
           <th>Min Comments</th>
@@ -134,12 +135,27 @@
         <tr>
           <td><strong>{{ job.workspace_name }}</strong></td>
           <td>
+            {% if job.job_kind in ('brand', 'publish') %}
+              <span class="badge" style="background:#fef3c7;color:#92400e;font-weight:600;font-size:10px;">
+                <i class="bi bi-cloud-upload me-1"></i>Brand: {{ job.brand }}
+              </span>
+            {% else %}
+              <span class="badge bg-light text-dark border" style="font-size:10px;">Scrape</span>
+            {% endif %}
+          </td>
+          <td>
             <span class="status-badge badge-{{ job.status }}">
               {% if job.status == 'running' %}<span class="dot-anim"></span>{% endif %}
               {{ job.status | capitalize }}
             </span>
           </td>
-          <td>{{ job.sources | length }} source{% if job.sources|length != 1 %}s{% endif %}</td>
+          <td>
+            {% if job.job_kind == 'publish' %}
+              <span style="font-size:12px;color:#64748b;">{{ job.publish_target }} · page {{ job.page_id }}</span>
+            {% else %}
+              {{ job.sources | length }} source{% if job.sources|length != 1 %}s{% endif %}
+            {% endif %}
+          </td>
           <td>{{ job.min_comments | default(0) }}</td>
           <td>{{ job.post_count if job.post_count is not none else '—' }}</td>
           <td style="color:#64748b;font-size:12px;">{{ job.created_at[:16].replace('T',' ') }}</td>

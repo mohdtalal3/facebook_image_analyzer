@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Flask frontend for the Facebook Product Image Analyzer"""
 
+import json
 import uuid
 from datetime import datetime
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, abort
 
+import brand_mapping
 import fb_client
 import zip_export
 from data_store import (
@@ -38,6 +40,35 @@ def inject_globals():
 def _urls_from_field(field_name: str) -> list[str]:
     raw = request.form.get(field_name, "")
     return [u.strip() for u in raw.splitlines() if u.strip()]
+
+
+def _brands_from_form() -> list[dict]:
+    """Parse the workspace's brand configurations out of the JSON payload
+    the workspace form builds from its dynamic brand rows. Each entry:
+    {"brand": canonical name, "page_id": str, "publish_target":
+    "retailshout"|"aos", "image_prompt": str}. Unknown brand names are
+    dropped; everything else is saved as-is (page_id/image_prompt may be
+    empty — publishing just skips brands without a page_id)."""
+    raw = request.form.get("brands_json", "").strip()
+    if not raw:
+        return []
+    try:
+        entries = json.loads(raw)
+    except Exception:
+        return []
+    brands = []
+    for entry in entries if isinstance(entries, list) else []:
+        brand = (entry.get("brand") or "").strip()
+        if brand not in brand_mapping.BRAND_KEYWORDS:
+            continue
+        target = entry.get("publish_target")
+        brands.append({
+            "brand": brand,
+            "page_id": str(entry.get("page_id") or "").strip(),
+            "publish_target": target if target in ("retailshout", "aos") else "retailshout",
+            "image_prompt": (entry.get("image_prompt") or "").strip(),
+        })
+    return brands
 
 
 def _explicit_sources_from_form() -> list[dict]:
@@ -84,6 +115,7 @@ def workspace_new():
             "min_comments": int(min_comments_raw) if min_comments_raw.isdigit() else 0,
             "created_at": datetime.now().isoformat(),
             "fb_sources": [],
+            "brands": _brands_from_form(),
             "schedule": {"enabled": False, "day": "saturday", "time": "08:00", "timezone": "UTC", "start_date": None, "min_comments": 0},
             "schedule_state": {},
         }
@@ -92,7 +124,9 @@ def workspace_new():
         save_workspaces(workspaces)
         return redirect(url_for("workspace_detail", workspace_id=ws["id"]))
 
-    return render_template("workspace_form.html", workspace=None, error=None)
+    return render_template("workspace_form.html", workspace=None, error=None,
+                           brands_json=None,
+                           all_brands=sorted(brand_mapping.BRAND_KEYWORDS.keys()))
 
 
 @app.route("/workspaces/<workspace_id>")
@@ -125,10 +159,12 @@ def workspace_edit(workspace_id):
         ws["name"] = name
         min_comments_raw = request.form.get("min_comments", "").strip()
         ws["min_comments"] = int(min_comments_raw) if min_comments_raw.isdigit() else 0
+        ws["brands"] = _brands_from_form()
         save_workspaces(workspaces)
         return redirect(url_for("workspace_detail", workspace_id=workspace_id))
 
-    return render_template("workspace_form.html", workspace=ws, error=None)
+    return render_template("workspace_form.html", workspace=ws, error=None,
+                           all_brands=sorted(brand_mapping.BRAND_KEYWORDS.keys()))
 
 
 @app.route("/workspaces/<workspace_id>/delete", methods=["POST"])
@@ -157,6 +193,9 @@ def workspace_run(workspace_id):
     min_comments_raw = request.form.get("min_comments", "").strip()
     min_comments = int(min_comments_raw) if min_comments_raw.isdigit() else (ws.get("min_comments") or 0)
 
+    brand_limit_raw = request.form.get("brand_post_limit", "").strip()
+    brand_post_limit = int(brand_limit_raw) if brand_limit_raw.isdigit() else 0
+
     job_id = launch_scrape_job(
         ws,
         sources=sources,
@@ -164,6 +203,7 @@ def workspace_run(workspace_id):
         end_date=end_date,
         min_comments=min_comments,
         triggered_by="manual",
+        brand_post_limit=brand_post_limit,
     )
 
     return redirect(url_for("job_detail", job_id=job_id))

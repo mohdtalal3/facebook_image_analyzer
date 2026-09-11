@@ -61,10 +61,24 @@ def _normalize(text: str) -> str:
     return text
 
 
-_KEYWORD_PATTERNS: dict[str, list[re.Pattern]] = {
-    brand: [re.compile(r"\b" + re.escape(_normalize(kw)) + r"\b") for kw in keywords]
-    for brand, keywords in BRAND_KEYWORDS.items()
-}
+_KEYWORD_PATTERNS: dict[str, list[re.Pattern]] = {}
+for _brand, _keywords in BRAND_KEYWORDS.items():
+    _patterns: list[re.Pattern] = []
+    for _kw in _keywords:
+        _n = _normalize(_kw)
+        # Plain word-boundary match: "#Aldi", "wal-mart", "hy vee", ...
+        _patterns.append(re.compile(r"\b" + re.escape(_n) + r"\b"))
+        # Hashtag-style fused compounds, where the brand and the next word
+        # share one token and a word-boundary regex would never match:
+        # "#SamsClub" / "#TraderJoes" / "#DollarGeneral" (multi-word brands
+        # fused without the space), and "#ALDIFinds" / "#WalmartFinds" /
+        # "#AldiFinds" / "#HyVeeFinds" etc. (brand + finds/haul/deals/run
+        # suffix — the standard grocery-haul hashtag format).
+        _fused = _n.replace(" ", "")
+        if _fused != _n:
+            _patterns.append(re.compile(r"\b" + re.escape(_fused) + r"\b"))
+        _patterns.append(re.compile(r"\b" + re.escape(_fused) + r"(?:finds?|hauls?|deals?|runs?)\b"))
+    _KEYWORD_PATTERNS[_brand] = _patterns
 
 
 def detect_brands(text: str | None) -> set[str]:
@@ -89,3 +103,44 @@ def detect_single_brand(text: str | None) -> str | None:
 
 def brand_slug(canonical_brand: str) -> str:
     return BRAND_SLUGS.get(canonical_brand, canonical_brand.lower().replace(" ", "-"))
+
+
+def main():
+    """Quick test CLI:
+      python3 brand_mapping.py "Big #ALDIFinds haul today"
+      echo "#SamsClub run" | python3 brand_mapping.py
+      python3 brand_mapping.py            (interactive — one text per line, Ctrl+C to quit)
+    """
+    import sys
+
+    texts = sys.argv[1:]
+    if not texts and not sys.stdin.isatty():
+        texts = [line.strip() for line in sys.stdin if line.strip()]
+    elif not texts:
+        print("Interactive brand-detection tester — type post text, Enter to check, Ctrl+C to quit.\n")
+        while True:
+            try:
+                line = input("text> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nbye")
+                break
+            if not line:
+                continue
+            _report(line)
+        return
+
+    for text in texts:
+        _report(text)
+
+
+def _report(text: str):
+    brands = detect_brands(text)
+    single = detect_single_brand(text)
+    print(f"text   : {text!r}")
+    print(f"brands : {sorted(brands) if brands else '(none)'}")
+    print(f"single : {single!r}" + (f"  (slug: {brand_slug(single)})" if single else "  (zero or multiple brands — post would be skipped)"))
+    print("-" * 60)
+
+
+if __name__ == "__main__":
+    main()

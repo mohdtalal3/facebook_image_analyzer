@@ -105,6 +105,14 @@
             <div class="form-text">Only posts with at least this many comments are processed. 0 = process all.</div>
           </div>
 
+          <div class="mb-4">
+            <label class="form-label">
+              <i class="bi bi-funnel me-1"></i>Posts per Brand <span class="badge bg-warning-subtle text-warning-emphasis" style="font-size:10px;">testing</span>
+            </label>
+            <input type="number" name="brand_post_limit" class="form-control" min="0" value="0" placeholder="0">
+            <div class="form-text">Testing limit: max posts kept PER BRAND across all sources. E.g. 1 with ALDI + Walmart picks at most 1 ALDI post and 1 Walmart post. 0 = no limit.</div>
+          </div>
+
           <button type="submit" class="btn btn-primary w-100 py-2" id="runBtn">
             <i class="bi bi-play-fill me-2"></i>Run Bot
           </button>
@@ -129,6 +137,21 @@
             <td class="ps-4 text-muted" style="padding:10px 0 10px 16px;">Default Min Comments</td>
             <td class="pe-4" style="padding:10px 16px 10px 0;">
               <code>{{ workspace.min_comments | default(0) }}</code>
+            </td>
+          </tr>
+          <tr>
+            <td class="ps-4 text-muted" style="padding:10px 0 10px 16px;">Brands</td>
+            <td class="pe-4" style="padding:10px 16px 10px 0;">
+              {% if workspace.brands %}
+                {% for b in workspace.brands %}
+                  <div style="font-size:12px;margin-bottom:3px;">
+                    <span class="badge" style="background:#dbeafe;color:#1e40af;font-weight:600;font-size:10.5px;">{{ b.brand }}</span>
+                    <span class="text-muted" style="font-size:11px;">{{ b.publish_target }}{% if b.page_id %} · page {{ b.page_id }}{% else %} · no page ID{% endif %}</span>
+                  </div>
+                {% endfor %}
+              {% else %}
+                <span class="badge" style="background:#f1f5f9;color:#64748b;font-weight:600;font-size:11px;">None configured</span>
+              {% endif %}
             </td>
           </tr>
           <tr>
@@ -191,8 +214,15 @@
              onmouseout="this.style.background='transparent'">
             <div>
               <div style="font-size:12px;font-weight:600;color:#0f172a;">
-                {{ job.sources | length }} source{% if job.sources|length != 1 %}s{% endif %}
-                {% if job.post_count is not none %} → {{ job.post_count }} post{% if job.post_count != 1 %}s{% endif %}{% endif %}
+                {% if job.job_kind in ('brand', 'publish') %}
+                  <span class="badge" style="background:#fef3c7;color:#92400e;font-weight:600;font-size:10px;">
+                    <i class="bi bi-cloud-upload me-1"></i>Brand: {{ job.brand }}
+                  </span>
+                  <span style="font-size:11px;color:#94a3b8;">→ {{ job.publish_target }}{% if job.page_id %} · page {{ job.page_id }}{% else %} · no page ID{% endif %}</span>
+                {% else %}
+                  {{ job.sources | length }} source{% if job.sources|length != 1 %}s{% endif %}
+                  {% if job.post_count is not none %} → {{ job.post_count }} post{% if job.post_count != 1 %}s{% endif %}{% endif %}
+                {% endif %}
               </div>
               <div style="font-size:11px;color:#94a3b8;margin-top:2px;">
                 {{ job.created_at[:16].replace('T',' ') }}

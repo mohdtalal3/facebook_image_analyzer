@@ -17,6 +17,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+import brand_mapping
 from data_store import (
     BASE_DIR, DATA_DIR, OUTPUT_DIR, append_log, load_jobs, save_jobs, update_job,
     load_workspaces, update_workspace,
@@ -54,8 +55,12 @@ def _merge_manifest_into_workspace(job_id: str, workspace_id: str):
     })
 
 
-def run_job_background(job_id: str, workspace_id: str, cmd: list, env: dict, temp_files: list[Path]):
-    """Run the pipeline subprocess in a background daemon thread."""
+def run_subprocess_job(job_id: str, workspace_id: str, cmd: list, env: dict,
+                       temp_files: list[Path], on_success=None):
+    """Run a pipeline subprocess in a background daemon thread and stream its
+    output into the job's log. Shared by scrape jobs (run_facebook.py) and
+    publish jobs (publish_wordpress.py). `on_success(job_id)` runs after a
+    successful exit (exit code 0)."""
     try:
         process = subprocess.Popen(
             cmd,
@@ -79,16 +84,13 @@ def run_job_background(job_id: str, workspace_id: str, cmd: list, env: dict, tem
         ts = datetime.now().strftime("%H:%M:%S")
 
         if process.returncode == 0:
-            manifest_file = OUTPUT_DIR / job_id / "manifest.json"
-            post_count = None
-            if manifest_file.exists():
-                try:
-                    post_count = json.loads(manifest_file.read_text(encoding="utf-8")).get("post_count")
-                except Exception:
-                    pass
-            update_job(job_id, {"status": "completed", "finished_at": datetime.now().isoformat(), "post_count": post_count})
+            update_job(job_id, {"status": "completed", "finished_at": datetime.now().isoformat()})
             append_log(job_id, f"[{ts}] ✅ Pipeline completed successfully")
-            _merge_manifest_into_workspace(job_id, workspace_id)
+            if on_success:
+                try:
+                    on_success(job_id)
+                except Exception as exc:
+                    append_log(job_id, f"[{ts}] ⚠️  Post-job hook failed: {exc}")
         else:
             update_job(job_id, {"status": "failed", "finished_at": datetime.now().isoformat()})
             append_log(job_id, f"[{ts}] ❌ Pipeline failed (exit code {process.returncode})")
@@ -103,6 +105,147 @@ def run_job_background(job_id: str, workspace_id: str, cmd: list, env: dict, tem
                 f.unlink()
 
 
+def _finish_scrape_job(job_id: str, workspace_id: str):
+    """Post-success work for a discovery (scrape) job: fold its post_count
+    (from manifest.json) into the job record, merge processed post IDs into
+    the workspace's dedup state, and launch one brand sub-workflow job per
+    brand that has posts in its manifest."""
+    manifest_file = OUTPUT_DIR / job_id / "manifest.json"
+    if manifest_file.exists():
+        try:
+            post_count = json.loads(manifest_file.read_text(encoding="utf-8")).get("post_count")
+            update_job(job_id, {"post_count": post_count})
+        except Exception:
+            pass
+    _merge_manifest_into_workspace(job_id, workspace_id)
+    _launch_brand_jobs(job_id, workspace_id)
+
+
+def _launch_brand_jobs(parent_job_id: str, workspace_id: str):
+    """Sub-workflow launcher: after the discovery job completes, create +
+    launch one brand job per brand that has posts in its manifest
+    (output/<parent_job_id>/<brand-slug>/posts.json). Each brand job does
+    the heavy work — extra-image discovery via last_media_id, download,
+    process, KIE analysis, organize, and (when the brand has a WordPress
+    page ID) publishing — as its own first-class job record with its own
+    logs, running in parallel with the other brands' jobs."""
+    ws = next((w for w in load_workspaces() if w["id"] == workspace_id), None)
+    if not ws:
+        return
+
+    brand_configs = ws.get("brands") or []
+    if brand_configs:
+        for brand_config in brand_configs:
+            brand = brand_config.get("brand")
+            if not brand:
+                continue
+            brand_slug = brand_mapping.brand_slug(brand)
+            posts = _read_brand_manifest(parent_job_id, brand_slug)
+            if not posts:
+                append_log(parent_job_id, f"[brand] {brand}: no posts matched this brand — skipping brand job")
+                continue
+            launch_brand_job(ws, parent_job_id, brand, brand_slug, brand_config,
+                             (brand_config.get("page_id") or "").strip() or None, len(posts))
+    else:
+        # No brands configured on the workspace: launch a processing job per
+        # brand folder the discovery phase produced (publishing disabled —
+        # there's no page ID to publish to).
+        for posts_file in sorted(OUTPUT_DIR.glob(f"{parent_job_id}/*/posts.json")):
+            brand_slug = posts_file.parent.name
+            try:
+                count = len(json.loads(posts_file.read_text(encoding="utf-8")).get("posts") or [])
+            except Exception:
+                count = 0
+            if not count:
+                continue
+            launch_brand_job(ws, parent_job_id, brand_slug, brand_slug,
+                             {"publish_target": "retailshout"}, None, count)
+
+
+def _read_brand_manifest(parent_job_id: str, brand_slug: str):
+    posts_file = OUTPUT_DIR / parent_job_id / brand_slug / "posts.json"
+    if not posts_file.exists():
+        return []
+    try:
+        return json.loads(posts_file.read_text(encoding="utf-8")).get("posts") or []
+    except Exception:
+        return []
+
+
+def launch_brand_job(ws: dict, parent_job_id: str, brand: str, brand_slug: str,
+                     brand_config: dict, page_id: str | None, post_count: int) -> str:
+    """Create a brand-job record for one brand and start run_brand_job.py in
+    the background. The brand job does the heavy work — extra-image
+    discovery (last_media_id walk), download, process, KIE analysis,
+    organize, and WordPress publish — all under the parent job's output dir,
+    with its own log."""
+    job_id = str(uuid.uuid4())
+    publish_target = brand_config.get("publish_target") or "retailshout"
+    job = {
+        "id": job_id,
+        "workspace_id": ws["id"],
+        "workspace_name": ws["name"],
+        "job_kind": "brand",
+        "parent_job_id": parent_job_id,
+        "brand": brand,
+        "brand_slug": brand_slug,
+        "publish_target": publish_target,
+        "page_id": page_id,
+        "sources": [],
+        "start_date": None,
+        "end_date": None,
+        "min_comments": 0,
+        "status": "pending",
+        "triggered_by": "brand",
+        "created_at": datetime.now().isoformat(),
+        "finished_at": None,
+        "pid": None,
+        "output_dir": f"output/{parent_job_id}",
+        "post_count": post_count,
+    }
+    jobs = load_jobs()
+    jobs.append(job)
+    save_jobs(jobs)
+
+    cmd = [
+        sys.executable, str(BASE_DIR / "run_brand_job.py"),
+        "--job-id", job_id,
+        "--parent-job-id", parent_job_id,
+        "--brand", brand,
+        "--brand-slug", brand_slug,
+        "--publish-target", publish_target,
+    ]
+    if page_id:
+        cmd += ["--page-id", page_id]
+
+    ts = datetime.now().strftime("%H:%M:%S")
+    append_log(job_id, f"[{ts}] ── Brand job {job_id[:8]}... created ────────────────────")
+    append_log(job_id, f"[{ts}] Workspace     : {ws['name']}")
+    append_log(job_id, f"[{ts}] Brand         : {brand}")
+    append_log(job_id, f"[{ts}] Posts to process: {post_count}")
+    append_log(job_id, f"[{ts}] Publish target: {publish_target}{' | WP page ' + page_id if page_id else ' | publishing disabled (no page ID)'}")
+    append_log(job_id, f"[{ts}] Source job    : {parent_job_id}")
+    append_log(job_id, f"[{ts}] ────────────────────────────────────────────────────")
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+
+    t = threading.Thread(
+        target=run_subprocess_job,
+        args=(job_id, ws["id"], cmd, env, []),
+        daemon=True,
+    )
+    t.start()
+
+    return job_id
+
+
+def run_job_background(job_id: str, workspace_id: str, cmd: list, env: dict, temp_files: list[Path]):
+    """Run the scrape pipeline subprocess in a background daemon thread."""
+    run_subprocess_job(job_id, workspace_id, cmd, env, temp_files,
+                       on_success=lambda jid: _finish_scrape_job(jid, workspace_id))
+
+
 def launch_scrape_job(
     ws: dict,
     sources: list[dict],
@@ -111,6 +254,7 @@ def launch_scrape_job(
     min_comments: int = 0,
     triggered_by: str = "manual",
     skip_post_ids: list[str] | None = None,
+    brand_post_limit: int = 0,
 ) -> str:
     """Create a job record for `ws` and start run_facebook.py in the background.
 
@@ -124,10 +268,12 @@ def launch_scrape_job(
         "id": job_id,
         "workspace_id": ws["id"],
         "workspace_name": ws["name"],
+        "job_kind": "scrape",
         "sources": sources,
         "start_date": start_date,
         "end_date": end_date,
         "min_comments": min_comments,
+        "brand_post_limit": brand_post_limit or 0,
         "status": "pending",
         "triggered_by": triggered_by,
         "created_at": datetime.now().isoformat(),
@@ -145,12 +291,24 @@ def launch_scrape_job(
     sources_file.write_text(json.dumps(sources, ensure_ascii=False), encoding="utf-8")
     temp_files = [sources_file]
 
+    brand_configs = ws.get("brands") or []
+    brands_file = None
+    if brand_configs:
+        brands_file = DATA_DIR / f"brands_{job_id}.json"
+        brands_file.write_text(json.dumps(brand_configs, ensure_ascii=False), encoding="utf-8")
+        temp_files.append(brands_file)
+
     cmd = [
         sys.executable, str(BASE_DIR / "run_facebook.py"),
         "--job-id", job_id,
         "--sources-file", str(sources_file),
         "--min-comments", str(min_comments or 0),
+        "--phase", "discover",
     ]
+    if brands_file:
+        cmd += ["--brands-file", str(brands_file)]
+    if brand_post_limit and brand_post_limit > 0:
+        cmd += ["--brand-post-limit", str(brand_post_limit)]
     if start_date:
         cmd += ["--start-date", start_date]
     if end_date:
@@ -166,7 +324,11 @@ def launch_scrape_job(
     ts = datetime.now().strftime("%H:%M:%S")
     append_log(job_id, f"[{ts}] ── Job {job_id[:8]}... created ({triggered_by}) ──────────────")
     append_log(job_id, f"[{ts}] Workspace     : {ws['name']}")
+    if brand_configs:
+        append_log(job_id, f"[{ts}] Brands        : {', '.join(b.get('brand', '?') for b in brand_configs)}")
     append_log(job_id, f"[{ts}] Min comments  : {min_comments or 0}")
+    if brand_post_limit and brand_post_limit > 0:
+        append_log(job_id, f"[{ts}] Brand limit   : max {brand_post_limit} post(s) per brand (testing)")
     append_log(job_id, f"[{ts}] Date window   : {start_date or 'open'} → {end_date or 'today'}")
     append_log(job_id, f"[{ts}] Sources ({len(sources)}):")
     for s in sources:

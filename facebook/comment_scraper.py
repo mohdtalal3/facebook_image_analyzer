@@ -162,7 +162,7 @@ def fb_json(response_text):
     return json.loads(first)
 
 
-def fetch_comments(feedback_id, cookies=None):
+def fetch_comments(feedback_id, cookies=None, max_pages=None):
     results = []
     cursor = None
     response_count = 0
@@ -240,6 +240,9 @@ def fetch_comments(feedback_id, cookies=None):
         cursor = comments_block.get("page_info", {}).get("end_cursor")
         #break
         if not cursor:
+            break
+
+        if max_pages is not None and response_count >= max_pages:
             break
 
         #time.sleep(0.4)

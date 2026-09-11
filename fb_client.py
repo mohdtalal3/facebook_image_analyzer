@@ -220,9 +220,13 @@ def download_pending_post_images(src_type: str, post: dict, save_root: str,
     return [p for p in saved if p]
 
 
-def fetch_comments_for_post(post_id: str, cookies: dict | None = None):
-    """Returns (comments, post_info) — post_info has 'media_id' for single-post image fetching."""
-    return _fetch_comments_for_post(post_id, cookies=cookies)
+def fetch_comments_for_post(post_id: str, cookies: dict | None = None,
+                            max_pages: int | None = None, with_replies: bool = True):
+    """Returns (comments, post_info) — post_info has 'media_id' for single-post image fetching.
+
+    For media_id-only callers: max_pages=1, with_replies=False → one request."""
+    return _fetch_comments_for_post(post_id, cookies=cookies, max_pages=max_pages,
+                                    with_replies=with_replies)
 
 
 def fetch_single_post_images(media_id: str, post_id: str, out_dir: str, cookies: dict | None = None,

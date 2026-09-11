@@ -203,21 +203,27 @@ def convert_post_id_to_feedback_id(post_id):
     return feedback_id
 
 
-def fetch_comments_for_post(post_id, cookies=None):
-    """Fetch all comments and replies for a given post_id"""
+def fetch_comments_for_post(post_id, cookies=None, max_pages=None, with_replies=True):
+    """Fetch comments (and replies) for a given post_id.
+
+    max_pages caps comment pagination (None = all pages); with_replies=False
+    skips the per-comment reply requests. For callers that only need
+    post_info/media_id, use max_pages=1, with_replies=False — one request.
+    """
     feedback_id = convert_post_id_to_feedback_id(post_id)
     print(f"  Fetching comments for post {post_id}...")
     print(f"  Using feedback_id: {feedback_id}")
     
     all_data = []
-    comments, post_info = fetch_comments(feedback_id, cookies=cookies)
+    comments, post_info = fetch_comments(feedback_id, cookies=cookies, max_pages=max_pages)
     
     for c in comments:
         print(f"    🗨️ {c.get('text', '')[:50]}...")
-        c["replies"] = fetch_replies(c, cookies=cookies)
-        
-        for r in c["replies"]:
-            print(f"       ↳ {r.get('text', '')[:50]}...")
+        if with_replies:
+            c["replies"] = fetch_replies(c, cookies=cookies)
+            
+            for r in c["replies"]:
+                print(f"       ↳ {r.get('text', '')[:50]}...")
         
         # Remove internal fields before appending
         c_clean = {k: v for k, v in c.items() if not k.startswith('_')}
