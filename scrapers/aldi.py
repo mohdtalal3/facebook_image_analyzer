@@ -19,19 +19,27 @@ class AldiSearcher:
             else None
         )
 
-    def warmup(self):
-        """Warm up the Aldi session."""
-
-        r = self.session.get(
-            "https://www.aldi.us/",
-            impersonate="chrome131",
-            proxies=self.proxies,
-            timeout=30,
-        )
-
-        r.raise_for_status()
-
-        print("✓ Session warmed")
+    def warmup(self, max_retries: int = 3):
+        """Warm up the Aldi session — retried with backoff, since a cold or
+        failed session makes the first search likely to be blocked."""
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                r = self.session.get(
+                    "https://www.aldi.us/",
+                    impersonate="chrome131",
+                    proxies=self.proxies,
+                    timeout=30,
+                )
+                r.raise_for_status()
+                print("✓ Session warmed")
+                return
+            except Exception as e:
+                last_error = e
+                print(f"  ⚠️ Warmup attempt {attempt}/{max_retries} failed: {e}")
+                if attempt < max_retries:
+                    time.sleep(2 * attempt)
+        raise last_error
 
     def search(self, query):
         last_exc = None
