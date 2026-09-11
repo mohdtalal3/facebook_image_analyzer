@@ -409,4 +409,4 @@ if __name__ == "__main__":
     print("  http://localhost:5007")
     print("=" * 50)
     sched_module.init_scheduler()
-    app.run(debug=True, host="0.0.0.0", port=5007, use_reloader=False)
+    app.run(debug=False, host="0.0.0.0", port=5006, use_reloader=False)
