@@ -509,7 +509,7 @@ def main():
             page_id=args.page_id,
             publish_target=args.publish_target,
             output_root=args.output_root,
-            status="draft",
+            status="publish",
             page_title=args.page_title,
             week_start_day=args.week_start,
         )
