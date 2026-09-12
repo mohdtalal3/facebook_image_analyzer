@@ -368,6 +368,25 @@ def settings():
     return render_template("settings.html", workspaces_raw=workspaces_raw, jobs_raw=jobs_raw, fb_auth=fb_auth)
 
 
+@app.route("/api/constants", methods=["GET"])
+def api_constants_get():
+    """The editable pipeline constants (constants.py) for the Settings tab."""
+    from constants_store import read_values
+    return jsonify({"constants": list(read_values().values())})
+
+
+@app.route("/api/constants", methods=["POST"])
+def api_constants_save():
+    """Save {key: value} updates into constants.py. Applies to newly launched
+    jobs (subprocesses re-import constants.py on launch)."""
+    from constants_store import write_values
+    updates = request.get_json(silent=True) or {}
+    errors = write_values(updates)
+    if errors:
+        return jsonify({"ok": False, "errors": errors}), 400
+    return jsonify({"ok": True})
+
+
 @app.route("/settings/save", methods=["POST"])
 def settings_save():
     target = request.form.get("target", "")

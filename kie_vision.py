@@ -112,53 +112,136 @@ try:
 except ImportError:
     rate_limiter = RateLimiter(KIE_MAX_REQUESTS_PER_WINDOW, KIE_RATE_WINDOW_SECONDS)
 
-PRODUCT_EXTRACTION_PROMPT = """Analyze the provided product image and return:
-
-* Brand
-* Product name
-* Food/non-food classification
-* Subcategory
-
-Inspect the entire image, including packaging, logos, labels, and visible text.
-
-Rules:
-
-* Identify the brand and product separately.
-* Use the most specific product name visible, including flavor/variant when clear.
-* Only identify the primary product.
-* Do not guess or hallucinate.
-* Return null when information cannot be confidently identified.
-* Ignore prices, discounts, store names, and slogans.
-* Normalize capitalization and formatting.
-
-Category:
-
-* `food` = products intended for human consumption.
-* `non_food` = household, cleaning, personal care, cosmetics, pet products, paper products, electronics, clothing, toys, etc.
-
-For `food`, choose exactly ONE subcategory:
-
-[
-"Bakery & Deli",
-"Dairy & Eggs",
-"Meat & Seafood",
-"Frozen Foods & Breakfast",
-"Snacks & Pantry Staples",
-"Beverages & Energy"
-]
-
-If the product is `non_food` or the subcategory is unclear, return `null`.
-
-Return JSON only:
+PRODUCT_EXTRACTION_PROMPT = """Analyze the provided product image and return ONLY valid JSON with these fields:
 
 {
-"brand": "string or null",
-"product_name": "string or null",
-"category": "food or non_food or null",
-"subcategory": "string or null"
+  "brand": "string or null",
+  "product_name": "string or null",
+  "category": "food or non_food or null",
+  "subcategory": "string or null"
 }
 
-Accuracy is more important than completeness. Never guess."""
+IMPORTANT — BRAND IDENTIFICATION:
+Identify the actual brand FIRST, before identifying the product.
+
+Carefully inspect the entire package for:
+- Brand logo
+- Brand name
+- Manufacturer/brand markings
+- Clearly visible branding text
+
+The "brand" field must contain ONLY the actual brand/manufacturer name.
+
+NEVER put the product type, flavor, variant, description, slogan, size, or generic product name in the brand field.
+
+Examples:
+- "OREO Chocolate Sandwich Cookies" → brand: "Oreo", product_name: "Chocolate Sandwich Cookies"
+- "Coca-Cola Zero Sugar" → brand: "Coca-Cola", product_name: "Zero Sugar"
+- "Lay's Classic Potato Chips" → brand: "Lay's", product_name: "Classic Potato Chips"
+
+If the brand is not clearly visible or cannot be confidently separated from the product name:
+"brand": null
+
+DO NOT guess the brand based on familiarity, packaging style, colors, or product type.
+
+IMPORTANT — PRODUCT IDENTIFICATION:
+Identify the actual primary product separately from the brand.
+
+Use the most specific product name clearly visible, including flavor, variant, type, or version when applicable.
+
+Do NOT include the brand name in product_name.
+
+Do NOT use the brand name as product_name unless the product itself is genuinely named that way.
+
+Ignore:
+- Prices
+- Discounts
+- Store names
+- Slogans
+- Promotional text
+- Marketing claims
+- Package size, unless it is part of the actual product name
+
+If the product name cannot be confidently identified:
+"product_name": null
+
+BRAND/PRODUCT VALIDATION:
+Before returning the answer, verify all of the following:
+
+1. What is the actual brand?
+2. What is the actual product?
+3. Are they separate pieces of information?
+4. Is there visible evidence supporting the brand?
+5. Is there visible evidence supporting the product name?
+
+Never force an answer.
+
+For example, if the package shows:
+"Brand X"
+"Strawberry Yogurt"
+
+Return:
+{
+  "brand": "Brand X",
+  "product_name": "Strawberry Yogurt"
+}
+
+If only "Strawberry Yogurt" is visible and no reliable brand is shown, return:
+{
+  "brand": null,
+  "product_name": "Strawberry Yogurt"
+}
+
+If you are uncertain whether a visible word is the brand or the product name, do NOT guess. Use null for the uncertain field.
+
+PRIMARY PRODUCT:
+Identify ONLY the main/primary product shown.
+
+Ignore background products, accessories, decorative objects, ingredients shown in serving suggestions, and unrelated objects.
+
+FOOD CLASSIFICATION:
+
+"food" = a product intended for human consumption.
+
+"non_food" = household products, cleaning products, personal care, cosmetics, pet products, paper products, electronics, clothing, toys, etc.
+
+If the classification cannot be confidently determined:
+"category": null
+
+FOOD SUBCATEGORY:
+If category is "food", choose EXACTLY ONE of:
+
+- "Bakery & Deli"
+- "Dairy & Eggs"
+- "Meat & Seafood"
+- "Frozen Foods & Breakfast"
+- "Snacks & Pantry Staples"
+- "Beverages & Energy"
+
+Choose the subcategory based on the actual product, NOT the brand.
+
+If category is "non_food":
+"subcategory": null
+
+If the food subcategory cannot be confidently determined:
+"subcategory": null
+
+ACCURACY RULES:
+- Inspect the entire image carefully before answering.
+- Read logos and visible text carefully.
+- Prioritize actual package branding over assumptions.
+- Do not infer a brand from the product category.
+- Do not infer a brand from packaging colors or design.
+- Do not confuse retailer/store names with product brands.
+- Do not confuse slogans with brand names.
+- Do not confuse product descriptions with brand names.
+- Do not put the same information into both brand and product_name.
+- Do not hallucinate missing information.
+- Accuracy is more important than completeness.
+- When uncertain, return null.
+- Normalize capitalization and formatting.
+- Return ONLY valid JSON.
+- Do not include explanations, markdown, comments, or additional text."""
 
 
 class KieAnalysisError(Exception):

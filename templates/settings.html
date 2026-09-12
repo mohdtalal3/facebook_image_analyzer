@@ -16,6 +16,34 @@
   <div class="col-12">
     <div class="card">
       <div class="card-header d-flex align-items-center justify-content-between">
+        <span><i class="bi bi-sliders me-2" style="color:#3b82f6"></i>Pipeline Constants</span>
+        <span class="badge" style="background:#dbeafe;color:#1e40af;font-size:10px;">constants.py</span>
+      </div>
+      <div class="card-body p-4">
+        <div class="alert alert-info mb-3" style="font-size:12.5px;">
+          <i class="bi bi-info-circle me-1"></i>
+          These control the scraping/analysis/AI pipeline. Saved changes are written to
+          <code>constants.py</code> and apply to <strong>newly launched jobs</strong> — running jobs keep their current values.
+        </div>
+        <div id="constantsLoading" class="text-muted" style="font-size:13px;">
+          <span class="spinner-border spinner-border-sm me-2"></span>Loading constants…
+        </div>
+        <div id="constantsGroups" class="d-none"></div>
+        <div class="d-flex justify-content-between align-items-center mt-3">
+          <small class="text-muted" id="constantsStatus"></small>
+          <button type="button" class="btn btn-primary btn-sm" id="constantsSaveBtn">
+            <i class="bi bi-check-lg me-1"></i>Save Constants
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-4 mb-4">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header d-flex align-items-center justify-content-between">
         <span><i class="bi bi-facebook me-2" style="color:#1877f2"></i>Facebook Session</span>
         {% if fb_auth.updated_at %}
         <span class="badge" style="background:#dcfce7;color:#15803d;font-size:10px;">
@@ -111,4 +139,100 @@
     </div>
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const groupsEl = document.getElementById('constantsGroups');
+  const loadingEl = document.getElementById('constantsLoading');
+  const statusEl = document.getElementById('constantsStatus');
+  let constants = [];
+
+  function inputFor(c) {
+    const key = c.key;
+    if (c.type === 'bool') {
+      return `<div class="form-check form-switch">
+        <input class="form-check-input const-input" type="checkbox" data-key="${key}" data-type="bool"
+               ${c.value === true ? 'checked' : ''}>
+      </div>`;
+    }
+    if (c.type === 'int_or_none') {
+      return `<input type="number" class="form-control form-control-sm const-input" style="max-width:140px;"
+                     data-key="${key}" data-type="int_or_none" min="0"
+                     value="${c.value === null || c.value === undefined ? '' : c.value}"
+                     placeholder="empty = no limit">`;
+    }
+    return `<input type="number" ${c.type === 'float' ? 'step="0.01"' : 'step="1"'}
+                   class="form-control form-control-sm const-input" style="max-width:140px;"
+                   data-key="${key}" data-type="${c.type}" value="${c.value}">`;
+  }
+
+  function render() {
+    const sections = [...new Set(constants.map(c => c.section))];
+    groupsEl.innerHTML = sections.map(section => `
+      <div class="mb-4">
+        <div class="section-title">${section}</div>
+        <div class="row g-3">
+          ${constants.filter(c => c.section === section).map(c => `
+            <div class="col-md-6 col-xl-4">
+              <div class="border rounded-3 p-3 h-100" style="background:#f8fafc;">
+                <div class="d-flex justify-content-between align-items-center gap-2">
+                  <label class="form-label mb-0" style="font-size:12.5px;">${c.label}</label>
+                  ${inputFor(c)}
+                </div>
+                <div class="form-text mt-2" style="font-size:11px;">${c.description}</div>
+                <div class="form-text" style="font-size:10px;opacity:.6;">${c.key}</div>
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>`).join('');
+  }
+
+  function collect() {
+    const updates = {};
+    document.querySelectorAll('.const-input').forEach(el => {
+      const key = el.dataset.key, type = el.dataset.type;
+      if (type === 'bool') updates[key] = el.checked;
+      else if (type === 'int_or_none') {
+        const v = el.value.trim();
+        updates[key] = v === '' ? null : Number(v);
+      } else updates[key] = Number(el.value);
+    });
+    return updates;
+  }
+
+  document.getElementById('constantsSaveBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('constantsSaveBtn');
+    btn.disabled = true;
+    statusEl.textContent = 'Saving…';
+    try {
+      const resp = await fetch('/api/constants', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(collect()),
+      });
+      const data = await resp.json();
+      if (data.ok) {
+        statusEl.innerHTML = '<span style="color:#15803d;">✅ Saved — applies to newly launched jobs</span>';
+      } else {
+        statusEl.innerHTML = `<span style="color:#b91c1c;">❌ ${(data.errors || ['Save failed']).join('; ')}</span>`;
+      }
+    } catch (e) {
+      statusEl.innerHTML = `<span style="color:#b91c1c;">❌ ${e.message}</span>`;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  fetch('/api/constants').then(r => r.json()).then(data => {
+    constants = data.constants || [];
+    render();
+    loadingEl.classList.add('d-none');
+    groupsEl.classList.remove('d-none');
+  }).catch(e => {
+    loadingEl.innerHTML = `<span style="color:#b91c1c;">❌ Could not load constants: ${e.message}</span>`;
+  });
+})();
+</script>
 {% endblock %}

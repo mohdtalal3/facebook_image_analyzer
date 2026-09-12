@@ -40,10 +40,11 @@ import fb_client
 import generate
 import kie_vision
 import scrapers
+from generate import make_comparison_image
 from constants import (
-    AI_IMAGE_MAX_BYTES, AI_IMAGE_WORKERS, DEDUPE_PRODUCTS, DEDUPE_THRESHOLD,
-    FETCH_COMMENTS, GENERATE_AI_IMAGES, MAX_IMAGES_PER_POST, PRICE_ON_IMAGE,
-    SCRAPER_ANALYSIS, SCRAPER_WORKERS,
+    AI_IMAGE_COMPARE, AI_IMAGE_MAX_BYTES, AI_IMAGE_WORKERS, DEDUPE_PRODUCTS,
+    DEDUPE_THRESHOLD, FETCH_COMMENTS, GENERATE_AI_IMAGES, MAX_IMAGES_PER_POST,
+    PRICE_ON_IMAGE, SCRAPER_ANALYSIS, SCRAPER_WORKERS,
 )
 from data_store import load_fb_auth
 from image_pipeline import compress_under_limit
@@ -411,6 +412,11 @@ def generate_ai_images(job_dir: Path, brand: str, brand_slug: str, image_prompt:
                 result_path = scratch_dir / f"result_{filename}"
                 generate.download_image(result_url, str(result_path))
                 compress_under_limit(str(result_path), AI_IMAGE_MAX_BYTES)
+                if AI_IMAGE_COMPARE:
+                    # Comparison sheet replaces the published image: AI result
+                    # on top, original below, both labeled — easy to compare.
+                    if make_comparison_image(result_path, img_path, result_path):
+                        print(f"  🔀 {filename} — comparison sheet (AI top / original below)")
                 shutil.move(str(result_path), str(img_path))
                 entry["ai_image"] = True
                 ok = True
