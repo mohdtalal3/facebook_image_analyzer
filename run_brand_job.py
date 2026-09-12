@@ -401,10 +401,7 @@ def generate_ai_images(job_dir: Path, brand: str, brand_slug: str, image_prompt:
 
         if not entry.get("ai_image"):  # already generated in a previous run — don't regenerate
             try:
-                upload_path = scratch_dir / f"upload_{filename}"
-                shutil.copyfile(img_path, upload_path)
-                compress_under_limit(str(upload_path), AI_IMAGE_MAX_BYTES)
-                public_url = generate.upload_image(str(upload_path))
+                public_url = generate.upload_image(str(img_path))
                 kie_vision.rate_limiter.acquire()
                 prompt = render_image_prompt(prompt_template, brand, entry)
                 task_id = generate.create_task(public_url, prompt=prompt)

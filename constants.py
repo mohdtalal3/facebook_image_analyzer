@@ -50,7 +50,7 @@ AI_IMAGE_MAX_BYTES = 512000      # images are compressed under this size before 
 AI_IMAGE_WORKERS = 5                # parallel AI image-generation threads (upload→createTask→poll→download
                                 # per image; the shared KIE rate limiter keeps the total under the
                                 # account cap, so this only overlaps the long poll waits)
-AI_IMAGE_COMPARE = True            # when True, the output/published image is a comparison sheet:
+AI_IMAGE_COMPARE = False            # when True, the output/published image is a comparison sheet:
                                 # the AI-generated image on TOP and the ORIGINAL below it, each
                                 # labeled ("AI GENERATED" / "ORIGINAL") so they're easy to compare.
                                 # Flip off for production publishing (clean AI image only).

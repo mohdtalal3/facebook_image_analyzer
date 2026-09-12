@@ -4,6 +4,7 @@ import os
 import shutil
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import requests
@@ -37,19 +38,30 @@ def load_prompt(prompt_file: str = None) -> str:
 def upload_image(file_path: str) -> str:
     """Upload a local image and return its public URL.
 
-    Delegates to kie_vision.upload_image — same KIE file-stream-upload
-    endpoint, one shared implementation (retry + shared account-wide rate
-    limiting) for both the analysis and AI-generation paths."""
-    return kie_vision.upload_image(file_path, upload_path="screenshots", mime="image/png")
+    The file is first copied to a temp file with a random UUID name so the
+    uploaded filename is never the same twice, then that copy is uploaded
+    and removed. Delegates to kie_vision.upload_image — same KIE
+    file-stream-upload endpoint, one shared implementation (retry + shared
+    account-wide rate limiting) for both the analysis and AI-generation
+    paths."""
+    src = Path(file_path)
+    tmp = src.with_name(f"{uuid.uuid4().hex}{src.suffix or '.jpg'}")
+    try:
+        shutil.copyfile(src, tmp)
+        return kie_vision.upload_image(str(tmp), upload_path="screenshots", mime="image/png")
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def create_task(image_url: str, prompt_file: str = None, prompt: str = None) -> str:
     payload = {
-        "model": "nano-banana-2-lite",
+        "model": "nano-banana-2",
         "input": {
             "prompt": prompt if prompt is not None else load_prompt(prompt_file),
             "image_input": [image_url],
-            "aspect_ratio": "auto"
+            "aspect_ratio": "auto",
+            "resolution": "1K",
+            #"background": "auto"
         },
     }
     for attempt in range(1, MAX_RETRIES + 1):
@@ -246,39 +258,33 @@ def generate_image(image_path: str, brand: str, product_name: str = "",
     print(f"Output  : {out_path}")
     print(f"Prompt  : {prompt[:120]}{'…' if len(prompt) > 120 else ''}")
 
-    # Upload copy (compressed, never touches the original)
-    upload_path = img_path.with_name(f".generate_upload_{img_path.name}")
-    try:
-        shutil.copyfile(img_path, upload_path)
-        compress_under_limit(str(upload_path), AI_IMAGE_MAX_BYTES)
-        public_url = upload_image(str(upload_path))
-        print(f"Uploaded: {public_url}")
+    # Upload the original as-is — no compression, no temp copy.
+    public_url = upload_image(str(img_path))
+    print(f"Uploaded: {public_url}")
 
-        kie_vision.rate_limiter.acquire()
-        task_id = create_task(public_url, prompt=prompt)
-        print(f"Task    : {task_id}")
-        result_url = poll_task(task_id)
-        print(f"Result  : {result_url}")
+    kie_vision.rate_limiter.acquire()
+    task_id = create_task(public_url, prompt=prompt)
+    print(f"Task    : {task_id}")
+    result_url = poll_task(task_id)
+    print(f"Result  : {result_url}")
 
-        if AI_IMAGE_COMPARE:
-            # Comparison sheet: AI result on top, original below, both labeled.
-            raw_path = img_path.with_name(f".generate_result_{img_path.name}")
-            try:
-                download_image(result_url, str(raw_path))
-                compress_under_limit(str(raw_path), AI_IMAGE_MAX_BYTES)
-                if make_comparison_image(raw_path, img_path, out_path):
-                    print(f"✅ Comparison image (AI top / original below) saved to {out_path}")
-                    return str(out_path)
-                print("  falling back to the plain AI image")
-            finally:
-                raw_path.unlink(missing_ok=True)
+    if AI_IMAGE_COMPARE:
+        # Comparison sheet: AI result on top, original below, both labeled.
+        raw_path = img_path.with_name(f".generate_result_{img_path.name}")
+        try:
+            download_image(result_url, str(raw_path))
+            compress_under_limit(str(raw_path), AI_IMAGE_MAX_BYTES)
+            if make_comparison_image(raw_path, img_path, out_path):
+                print(f"✅ Comparison image (AI top / original below) saved to {out_path}")
+                return str(out_path)
+            print("  falling back to the plain AI image")
+        finally:
+            raw_path.unlink(missing_ok=True)
 
-        download_image(result_url, str(out_path))
-        compress_under_limit(str(out_path), AI_IMAGE_MAX_BYTES)
-        print(f"✅ AI image saved to {out_path}")
-        return str(out_path)
-    finally:
-        upload_path.unlink(missing_ok=True)
+    download_image(result_url, str(out_path))
+    compress_under_limit(str(out_path), AI_IMAGE_MAX_BYTES)
+    print(f"✅ AI image saved to {out_path}")
+    return str(out_path)
 
 
 def main():
