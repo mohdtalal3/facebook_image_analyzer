@@ -57,11 +57,12 @@ def create_task(image_url: str, prompt_file: str = None, prompt: str = None) -> 
     payload = {
         "model": "nano-banana-2-lite",
         "input": {
+            # nano-banana-2-lite: image_urls (up to 10, empty = text-to-image),
+            # prompt (max 20000 chars), aspect_ratio. No resolution/background
+            # fields on this model.
             "prompt": prompt if prompt is not None else load_prompt(prompt_file),
-            "image_input": [image_url],
+            "image_urls": [image_url],
             "aspect_ratio": "auto",
-            #"resolution": "1K",
-            #"background": "auto"
         },
     }
     for attempt in range(1, MAX_RETRIES + 1):
