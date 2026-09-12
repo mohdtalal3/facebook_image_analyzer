@@ -12,7 +12,9 @@ FETCH_COMMENTS = False          # skip comment scraping — not needed right now
 ANALYZE_IMAGES = True  # run the KIE upload+analyze workflow at all —
                                  # when False, images are still downloaded/processed
                                  # but never sent to KIE (analysis_status: "skipped")
-MAX_IMAGES_PER_POST = 10      # cap images downloaded/processed/analyzed per post — for testing
+MAX_IMAGES_PER_POST = None    # cap images downloaded/processed/analyzed per post —
+                                 # None = no limit (all images; a 50-image hard safety cap
+                                 # still applies inside the album walk), or a number to cap
 IMAGE_WORKERS = 5               # concurrent per-post image processing/analysis threads
 IMAGE_DOWNLOAD_WORKERS = 5      # concurrent per-post image *download* threads (fb_client.download_pending_post_images)
 POSTS_PER_SOURCE_DEFAULT = 500  # default --posts-per-source limit for page/group fetch
@@ -45,6 +47,9 @@ GENERATE_AI_IMAGES = True       # send each food image to KIE (nano-banana-pro v
                                 # config (--image-prompt); brands without one skip generation.
 AI_IMAGE_MAX_BYTES = 500 * 1024  # images are compressed under this size before upload to KIE
                                 # and the AI result is compressed under it before publishing
+AI_IMAGE_WORKERS = 5            # parallel AI image-generation threads (upload→createTask→poll→download
+                                # per image; the shared KIE rate limiter keeps the total under the
+                                # account cap, so this only overlaps the long poll waits)
 
 # ── image_pipeline.py ──
 MAX_PROCESSED_BYTES = 200 * 1024  # 200 KB cap for processed (grayscale) images

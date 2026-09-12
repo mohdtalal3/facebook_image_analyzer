@@ -130,9 +130,9 @@ def fetch_remaining_images(last_media_id, post_id, current_image_count, save_dir
     current_node = last_media_id
     visited = set()
     image_index = current_image_count + 1
-    hard_cap = min(50, max_images) if max_images is not None else 50
+    hard_cap = min(100, max_images) if max_images is not None else 100
 
-    while current_node and current_node not in visited and image_index <= hard_cap:  # Max 50 images safety limit
+    while current_node and current_node not in visited and image_index <= hard_cap:  # Max 100 images safety limit
         visited.add(current_node)
         
         variables = {

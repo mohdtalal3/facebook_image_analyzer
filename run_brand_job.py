@@ -41,7 +41,7 @@ import generate
 import kie_vision
 import scrapers
 from constants import (
-    AI_IMAGE_MAX_BYTES, DEDUPE_PRODUCTS, DEDUPE_THRESHOLD,
+    AI_IMAGE_MAX_BYTES, AI_IMAGE_WORKERS, DEDUPE_PRODUCTS, DEDUPE_THRESHOLD,
     FETCH_COMMENTS, GENERATE_AI_IMAGES, MAX_IMAGES_PER_POST, PRICE_ON_IMAGE,
     SCRAPER_ANALYSIS, SCRAPER_WORKERS,
 )
@@ -384,9 +384,19 @@ def generate_ai_images(job_dir: Path, brand: str, brand_slug: str, image_prompt:
     print("=" * 70)
 
     generated = 0
-    for filename, entry in entries.items():
+
+    # Parallel AI generation: AI_IMAGE_WORKERS threads each run the full
+    # upload→createTask→poll→download pipeline for a different image, so the
+    # long poll waits (15-20s per task) overlap instead of stacking up. All
+    # KIE calls are paced through the shared thread-safe rate limiter, and
+    # each worker touches only its own files + its own analysis entry, so
+    # there is no shared mutable state. The JSON write below happens once,
+    # after all workers finish.
+    def _generate_one(item):
+        filename, entry = item
         img_path = images_dir / filename
         price = (entry.get("scraped") or {}).get("price")
+        ok = False
 
         if not entry.get("ai_image"):  # already generated in a previous run — don't regenerate
             try:
@@ -403,7 +413,7 @@ def generate_ai_images(job_dir: Path, brand: str, brand_slug: str, image_prompt:
                 compress_under_limit(str(result_path), AI_IMAGE_MAX_BYTES)
                 shutil.move(str(result_path), str(img_path))
                 entry["ai_image"] = True
-                generated += 1
+                ok = True
                 print(f"  🎨 {filename} — AI image generated")
             except Exception as e:
                 print(f"  ⚠️  AI generation failed for {filename}: {e} — publishing the original")
@@ -413,6 +423,12 @@ def generate_ai_images(job_dir: Path, brand: str, brand_slug: str, image_prompt:
             if overlay_price_on_image(img_path, price):
                 entry["price_overlaid"] = True
                 print(f"  🏷️  Price {price} stamped onto {filename}")
+        return ok
+
+    with ThreadPoolExecutor(max_workers=AI_IMAGE_WORKERS) as executor:
+        for ok in executor.map(_generate_one, entries.items()):
+            if ok:
+                generated += 1
 
     shutil.rmtree(scratch_dir, ignore_errors=True)
     try:
