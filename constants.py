@@ -12,7 +12,7 @@ FETCH_COMMENTS = False              # skip comment scraping — not needed right
 ANALYZE_IMAGES = True      # run the KIE upload+analyze workflow at all —
                                  # when False, images are still downloaded/processed
                                  # but never sent to KIE (analysis_status: "skipped")
-MAX_IMAGES_PER_POST = None            # cap images downloaded/processed/analyzed per post —
+MAX_IMAGES_PER_POST = 10          # cap images downloaded/processed/analyzed per post —
                                  # None = no limit (all images; a 50-image hard safety cap
                                  # still applies inside the album walk), or a number to cap
 IMAGE_WORKERS = 5                   # concurrent per-post image processing/analysis threads
