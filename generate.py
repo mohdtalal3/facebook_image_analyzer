@@ -55,12 +55,12 @@ def upload_image(file_path: str) -> str:
 
 def create_task(image_url: str, prompt_file: str = None, prompt: str = None) -> str:
     payload = {
-        "model": "nano-banana-2",
+        "model": "nano-banana-2-lite",
         "input": {
             "prompt": prompt if prompt is not None else load_prompt(prompt_file),
             "image_input": [image_url],
             "aspect_ratio": "auto",
-            "resolution": "1K",
+            #"resolution": "1K",
             #"background": "auto"
         },
     }
