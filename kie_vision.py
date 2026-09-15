@@ -29,17 +29,14 @@ HEADERS_AUTH = {"Authorization": f"Bearer {KIE_API_KEY}"}
 
 # ── Rate limiter ──
 # KIE allows up to 20 new generation/analysis requests per 10s PER ACCOUNT.
-# Brand jobs run as separate subprocesses in parallel, so the limiter must be
-# shared across processes — an in-memory per-process limiter would let N
-# concurrent brand jobs collectively exceed the account cap (and a finished
-# job's unused capacity would be wasted). SharedFileRateLimiter keeps the
-# recent request timestamps in a small JSON file under data/ guarded by an
-# flock, so every process draws from the same account-wide window.
+# The pipeline runs as ONE job at a time (analysis and image generation happen
+# in sequence inside the same run_facebook.py subprocess), so a thread-safe
+# in-process limiter is enough — the per-post analysis threads and the AI
+# generation threads all draw from the same process-wide window.
 
 
 class RateLimiter:
-    """Single-process rate limiter (kept as fallback when fcntl is
-    unavailable). Thread-safe within one process."""
+    """Thread-safe in-process rate limiter."""
 
     def __init__(self, max_calls: int, period: float):
         self.max_calls = max_calls
@@ -58,59 +55,7 @@ class RateLimiter:
             time.sleep(0.2)
 
 
-class SharedFileRateLimiter:
-    """Cross-process rate limiter: all KIE-calling processes (the parallel
-    brand jobs, the discovery job, the CLI) share one window of timestamps
-    persisted in `state_path`, locked with flock for atomic read-modify-write.
-    When a process exits, its unused capacity is simply not extended — the
-    survivors automatically get the full account budget back. Prunes entries
-    older than the window on every attempt, so a crashed process's stale
-    timestamps disappear within one period."""
-
-    def __init__(self, max_calls: int, period: float, state_path):
-        self.max_calls = max_calls
-        self.period = period
-        self.state_path = Path(state_path)
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-
-    def acquire(self):
-        while True:
-            if self._try_acquire():
-                return
-            time.sleep(0.2)
-
-    def _try_acquire(self) -> bool:
-        import fcntl
-        now = time.time()
-        fd = os.open(self.state_path, os.O_RDWR | os.O_CREAT, 0o644)
-        with os.fdopen(fd, "r+") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            try:
-                raw = f.read().strip()
-                try:
-                    timestamps = json.loads(raw) if raw else []
-                except Exception:
-                    timestamps = []
-                timestamps = [t for t in timestamps if now - t < self.period]
-                if len(timestamps) >= self.max_calls:
-                    return False
-                timestamps.append(now)
-                f.seek(0)
-                f.truncate()
-                f.write(json.dumps(timestamps))
-                return True
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
-
-
-try:
-    import fcntl  # noqa: F401 — POSIX only; falls back to in-process limiter on Windows
-    rate_limiter = SharedFileRateLimiter(
-        KIE_MAX_REQUESTS_PER_WINDOW, KIE_RATE_WINDOW_SECONDS,
-        Path(__file__).resolve().parent / "data" / "kie_rate_window.json",
-    )
-except ImportError:
-    rate_limiter = RateLimiter(KIE_MAX_REQUESTS_PER_WINDOW, KIE_RATE_WINDOW_SECONDS)
+rate_limiter = RateLimiter(KIE_MAX_REQUESTS_PER_WINDOW, KIE_RATE_WINDOW_SECONDS)
 
 PRODUCT_EXTRACTION_PROMPT = """Analyze the provided product image and return ONLY valid JSON with these fields:
 
