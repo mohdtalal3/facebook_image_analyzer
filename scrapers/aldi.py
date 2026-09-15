@@ -1,6 +1,7 @@
 import json
 import re
 import time
+from urllib.parse import quote
 from bs4 import BeautifulSoup
 from curl_cffi import requests
 
@@ -95,7 +96,7 @@ class AldiSearcher:
             "accept": "*/*",
             "content-type": "application/json",
             "origin": "https://www.aldi.us",
-            "referer": f"https://www.aldi.us/store/aldi/s?k={query.replace(' ', '+')}",
+            "referer": f"https://www.aldi.us/store/aldi/s?k={quote(query)}",
             "x-client-identifier": "web",
             "x-client-user-id": "21123509038450780",
             "x-ic-view-layer": "true",
