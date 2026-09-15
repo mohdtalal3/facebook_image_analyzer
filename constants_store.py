@@ -55,6 +55,10 @@ EDITABLE: dict[str, tuple] = {
     "AI_IMAGE_COMPARE": (bool, "AI image generation", "Comparison mode",
                          "Publish a comparison sheet (AI on top, original below, labeled) instead of the clean AI image"),
 
+    # ── Publishing ──
+    "SKIP_PRODUCTS_WITHOUT_PRICE": (bool, "Publishing", "Skip products without price",
+                                    "Don't upload/publish products whose scrape found no price (off = publish everything)"),
+
     # ── Image processing ──
     "MAX_PROCESSED_BYTES": (int, "Image processing", "Processed image cap (bytes)",
                             "Size cap for processed (grayscale) images"),
