@@ -350,10 +350,15 @@
 
           <div class="row g-3 mb-4">
             <div class="col-sm-6">
-              <label class="form-label"><i class="bi bi-calendar-event me-1"></i>Fixed Start Date</label>
-              <input type="date" name="schedule_start_date" class="form-control"
-                     value="{{ workspace.schedule.start_date if workspace.schedule and workspace.schedule.start_date else '' }}">
-              <div class="form-text">Optional. Leave empty to roll forward from the last run each time (first run looks back 7 days).</div>
+              <label class="form-label"><i class="bi bi-calendar-event me-1"></i>Fixed Start Day</label>
+              {% set current_start = (workspace.schedule.start_date if workspace.schedule and workspace.schedule.start_date else '') | lower %}
+              <select name="schedule_start_date" class="form-select">
+                <option value="">Rolling from last run</option>
+                {% for d in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] %}
+                <option value="{{ d }}" {% if current_start == d %}selected{% endif %}>{{ d | capitalize }}</option>
+                {% endfor %}
+              </select>
+              <div class="form-text">Optional — each run scrapes from the most recent selected weekday up to the run date. Leave on "Rolling" to start from the last run (first run looks back 7 days).</div>
             </div>
             <div class="col-sm-6">
               <label class="form-label"><i class="bi bi-chat-square-text me-1"></i>Minimum Comments</label>

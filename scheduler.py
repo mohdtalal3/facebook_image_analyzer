@@ -172,9 +172,15 @@ def _do_scan(workspace_id: str, manual: bool = False):
         _log_scan_only(workspace_id, scan_log_lines)
         return
 
-    fixed_start = (schedule.get("start_date") or "").strip()
-    if fixed_start:
-        start_date = fixed_start
+    fixed_start = (schedule.get("start_date") or "").strip().lower()
+    if fixed_start in WEEKDAYS:
+        # Weekday-based rolling window: "monday" + a Saturday schedule means
+        # every run scrapes from the MOST RECENT monday (run date minus the
+        # day difference) → run date. A new monday each week.
+        target = WEEKDAYS[fixed_start]
+        days_back = (now_utc.weekday() - target) % 7
+        start_date = (now_utc - timedelta(days=days_back)).date().isoformat()
+        scan_log_lines.append(f"🗓️  Fixed weekday start: {fixed_start} → {start_date}")
     else:
         last_run_at = existing_state.get("last_run_at")
         if last_run_at:

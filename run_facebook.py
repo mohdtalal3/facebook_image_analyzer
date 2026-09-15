@@ -139,13 +139,12 @@ def make_per_brand_limiter(brand_filter, limit: int):
 
     def limited(text) -> bool:
         brand = brand_mapping.detect_single_brand(text)
-        if brand is None:
-            return False
         if not brand_filter(text):
             return False
-        if counts.get(brand, 0) >= limit:
+        key = brand or "__unbranded__"   # relaxed sources accept no-brand posts
+        if counts.get(key, 0) >= limit:
             return False
-        counts[brand] = counts.get(brand, 0) + 1
+        counts[key] = counts.get(key, 0) + 1
         return True
 
     return limited
@@ -467,12 +466,13 @@ def organize_or_discard(job_dir: Path, staging_root: Path, post_id: str, text_br
     return written
 
 
-def discover_post_url(url: str, cookies: dict) -> str | None:
+def discover_post_url(url: str, cookies: dict) -> str:
     """Discovery phase for a bare post URL: resolve its post ID only — the
-    post's text/media/images are all fetched in process_post_url() below."""
+    post's text/media/images are all fetched in process_post_url() below.
+    Raises on resolution failure so _with_source_retries retries it."""
     post_id = fb_client.resolve_post_id(url, cookies=cookies)
     if not post_id:
-        print(f"  ❌ Could not resolve post ID from {url}")
+        raise RuntimeError(f"Could not resolve post ID from {url}")
     return post_id
 
 
@@ -574,8 +574,7 @@ def discover_page_or_group_posts(job_dir: Path, url: str, src_type: str, cookies
     if src_type == "group":
         source_id = fb_client.resolve_group_id(url, cookies=cookies)
         if not source_id:
-            print(f"  ❌ Could not resolve group ID from {url}")
-            return None
+            raise RuntimeError(f"Could not resolve group ID from {url}")
         posts = fb_client.fetch_group_posts(
             source_id, limit=posts_per_source, min_comments=min_comments,
             start_date=start_dt, end_date=end_dt, save_root=str(scratch_root),
@@ -586,8 +585,7 @@ def discover_page_or_group_posts(job_dir: Path, url: str, src_type: str, cookies
     else:
         source_id = fb_client.resolve_page_id(url, cookies=cookies)
         if not source_id:
-            print(f"  ❌ Could not resolve page ID from {url}")
-            return None
+            raise RuntimeError(f"Could not resolve page ID from {url}")
         posts = fb_client.fetch_page_posts(
             source_id, limit=posts_per_source, min_comments=min_comments,
             start_date=start_dt, end_date=end_dt, save_root=str(scratch_root),
@@ -636,12 +634,19 @@ def process_page_or_group_posts(job_dir: Path, discovered: dict, cookies: dict,
         # limit-aware one — the limiter's counter already counted this post
         # at discovery, and counting it again here would push it over the cap.
         text_brand = brand_mapping.detect_single_brand(post.get(text_key))
+        relaxed_brand = discovered.get("relaxed_brand")
+        if not text_brand and relaxed_brand:
+            # Source URL matches the workspace's brand (e.g. facebook.com/ALDI.USA
+            # for ALDI) — the source IS the brand, so a post whose text doesn't
+            # name any brand is still the brand's post. Treat it as such.
+            text_brand = relaxed_brand
+            print(f"  🔗 Post {post_id} has no brand in text — source URL matches '{relaxed_brand}', treating as {relaxed_brand}")
         print(f"  🏷️  Post {post_id} brand: {text_brand or '(none / ambiguous)'} — text: {(post.get(text_key) or '')[:150]!r}")
         if not text_brand:
             print(f"  🗑️  Skipping post {post_id} — no single retailer brand detected in post text")
             processed_ids.append(post_id)
             continue
-        if not brand_filter(post.get(text_key)):
+        if text_brand != relaxed_brand and not brand_filter(post.get(text_key)):
             print(f"  🗑️  Skipping post {post_id} — brand '{text_brand}' does not match this workspace's brand")
             processed_ids.append(post_id)
             continue
@@ -1112,11 +1117,23 @@ def main():
                     print(f"  🔗 Found 1 post")
                     total_found += 1
             else:
+                # A source URL that contains the brand name (e.g.
+                # facebook.com/ALDI.USA for brand ALDI) IS the brand's own
+                # page/group — its posts often don't name the brand in the
+                # text, so accept no-brand posts there too. Posts detecting a
+                # DIFFERENT brand are still rejected.
+                def _relaxed(text, _brand=args.brand):
+                    return brand_mapping.detect_single_brand(text) in (_brand, None)
+                relaxed = bool(args.brand) and args.brand.lower() in url.lower()
+                src_filter = make_per_brand_limiter(_relaxed, args.brand_post_limit) if relaxed else effective_filter
+                if relaxed:
+                    print("  🔗 Source URL contains the brand — posts without brand text are accepted too")
                 discovered = _with_source_retries(url, lambda: discover_page_or_group_posts(
                     job_dir, url, src_type, cookies, args.min_comments,
-                    start_dt, end_dt, args.posts_per_source, effective_filter,
+                    start_dt, end_dt, args.posts_per_source, src_filter,
                 ))
                 if discovered is not None:
+                    discovered["relaxed_brand"] = args.brand if relaxed else None
                     discovered_page_group_sources.append(discovered)
                     print(f"  🔗 Found {len(discovered['posts'])} post(s)")
                     total_found += len(discovered["posts"])

@@ -374,7 +374,11 @@ def workspace_schedule_save(workspace_id):
     day = request.form.get("schedule_day", "saturday").strip().lower()
     time_str = request.form.get("schedule_time", "08:00").strip()
     tz_name = request.form.get("schedule_timezone", "UTC").strip()
-    start_date = request.form.get("schedule_start_date", "").strip() or None
+    start_date_raw = request.form.get("schedule_start_date", "").strip().lower()
+    if start_date_raw and start_date_raw not in ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"):
+        flash("Fixed Start Date must be a weekday name (e.g. monday) or empty.", "danger")
+        return redirect(url_for("workspace_detail", workspace_id=workspace_id))
+    start_date = start_date_raw or None
 
     min_comments_raw = request.form.get("schedule_min_comments", "").strip()
     min_comments = int(min_comments_raw) if min_comments_raw.isdigit() else 0
