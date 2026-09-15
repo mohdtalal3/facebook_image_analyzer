@@ -35,6 +35,7 @@ import requests
 from dotenv import load_dotenv
 
 from wordpress_publisher import WordPressPublisher
+import constants
 
 # Load .env from project root (WP_URL_RS/... or WP_URL/... per publish target)
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -344,7 +345,10 @@ def publish_brand(parent_job_id: str, brand: str, brand_slug: str, category: str
     for i, img_path in enumerate(images, start=1):
         entry = analysis.get(img_path.name) or {}
         scraped = entry.get("scraped") or {}
-        name = entry.get("product_name") or scraped.get("name") or img_path.stem
+        if constants.SKIP_PRODUCTS_WITHOUT_PRICE and not scraped.get("price"):
+            print(f"  [{i}] ⏭️  {img_path.name} — no scraped price, skipping")
+            continue
+        name = scraped.get("name") or entry.get("product_name") or img_path.stem
         title = name
         media_id = publisher.upload_image(img_path, title=title)
         if not media_id:

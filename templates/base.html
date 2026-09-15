@@ -229,6 +229,10 @@
         <span class="running-pill">{{ running_jobs_count }}</span>
       {% endif %}
     </a>
+    <a href="{{ url_for('scrape_stats') }}"
+       class="sb-link {% if request.endpoint == 'scrape_stats' %}active{% endif %}">
+      <i class="bi bi-bar-chart-line-fill"></i> Scrape Stats
+    </a>
   </div>
 
   <div class="sb-section">

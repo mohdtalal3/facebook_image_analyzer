@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Flask frontend for the Facebook Product Image Analyzer"""
 
+import csv
+import io
 import uuid
 from datetime import datetime
 
@@ -14,6 +16,7 @@ from data_store import (
     load_jobs, save_jobs,
     get_logs,
     load_fb_auth, save_fb_auth,
+    load_scrape_stats,
     WORKSPACES_FILE, JOBS_FILE,
 )
 from job_runner import launch_scrape_job
@@ -293,7 +296,71 @@ def api_stats():
     })
 
 
-# ── ROUTES: SOURCE SCHEDULE ───────────────────────────────────────────────────
+# ── ROUTES: SCRAPE STATS ─────────────────────────────────────────────────────
+
+def _filtered_scrape_stats() -> tuple[list, str, str, str]:
+    """Load scraper stats, applying the optional brand + date-range filters
+    from the query string (?brand=&date_from=YYYY-MM-DD&date_to=YYYY-MM-DD)."""
+    stats = load_scrape_stats()
+    brand = (request.args.get("brand") or "").strip()
+    date_from = (request.args.get("date_from") or "").strip()
+    date_to = (request.args.get("date_to") or "").strip()
+    if brand:
+        stats = [s for s in stats if s.get("brand") == brand]
+    if date_from:
+        stats = [s for s in stats if (s.get("date") or "") >= date_from]
+    if date_to:
+        stats = [s for s in stats if (s.get("date") or "") <= date_to]
+    return stats, brand, date_from, date_to
+
+
+def _aggregate_scrape_stats(stats: list) -> list[dict]:
+    """Roll per-run records up into one row per brand with food / non-food
+    columns: how many products were looked up (total), matched (found) and
+    had a price (with_price)."""
+    agg: dict = {}
+    for s in stats:
+        key = (s.get("brand") or "Unknown", s.get("brand_slug") or "")
+        row = agg.setdefault(key, {
+            "brand": key[0],
+            "brand_slug": key[1],
+            "food": {"total": 0, "found": 0, "with_price": 0},
+            "non_food": {"total": 0, "found": 0, "with_price": 0},
+        })
+        cat = s.get("category") if s.get("category") in ("food", "non_food") else "food"
+        for field in ("total", "found", "with_price"):
+            row[cat][field] += int(s.get(field) or 0)
+    return sorted(agg.values(), key=lambda r: r["brand"].lower())
+
+
+@app.route("/scrape-stats")
+def scrape_stats():
+    stats, brand, date_from, date_to = _filtered_scrape_stats()
+    summary = _aggregate_scrape_stats(stats)
+    brands = sorted({s.get("brand") for s in load_scrape_stats() if s.get("brand")})
+    runs = sorted(stats, key=lambda s: s.get("recorded_at", ""), reverse=True)
+    return render_template("scrape_stats.html",
+                           runs=runs, summary=summary,
+                           selected_brand=brand, date_from=date_from, date_to=date_to,
+                           all_brands=brands)
+
+
+@app.route("/scrape-stats/download.csv")
+def scrape_stats_csv():
+    stats, brand, date_from, date_to = _filtered_scrape_stats()
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["date", "brand", "category", "products_looked_up",
+                     "products_found", "with_price", "job_id"])
+    for s in sorted(stats, key=lambda s: (s.get("date", ""), s.get("brand", ""), s.get("category", ""))):
+        writer.writerow([s.get("date"), s.get("brand"), s.get("category"),
+                         s.get("total"), s.get("found"), s.get("with_price"), s.get("job_id")])
+    buf.seek(0)
+    return send_file(io.BytesIO(buf.getvalue().encode("utf-8-sig")), as_attachment=True,
+                     download_name="scrape_stats.csv", mimetype="text/csv")
+
+
+# ── ROUTES: SOURCE SCHEDULE ──────────────────────────────────────────────────────
 
 @app.route("/workspaces/<workspace_id>/schedule", methods=["POST"])
 def workspace_schedule_save(workspace_id):

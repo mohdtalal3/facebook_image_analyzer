@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+
+{% block title %}Scrape Stats{% endblock %}
+
+{% block page_head %}
+<div class="page-head">
+  <h1><i class="bi bi-bar-chart-line-fill me-2"></i>Scrape Stats</h1>
+  <a href="{{ url_for('scrape_stats_csv', brand=selected_brand or none, date_from=date_from or none, date_to=date_to or none) }}"
+     class="btn btn-primary btn-sm">
+    <i class="bi bi-download me-1"></i> Download CSV
+  </a>
+</div>
+{% endblock %}
+
+{% block content %}
+
+<div class="card mb-4">
+  <div class="card-header"><i class="bi bi-funnel me-1"></i> Filter</div>
+  <div class="card-body">
+    <form method="get" action="{{ url_for('scrape_stats') }}" class="row g-3 align-items-end">
+      <div class="col-md-4">
+        <label class="form-label">Brand</label>
+        <select name="brand" class="form-select">
+          <option value="">All brands</option>
+          {% for b in all_brands %}
+          <option value="{{ b }}" {% if b == selected_brand %}selected{% endif %}>{{ b }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">From date</label>
+        <input type="date" name="date_from" class="form-control" value="{{ date_from }}">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">To date</label>
+        <input type="date" name="date_to" class="form-control" value="{{ date_to }}">
+      </div>
+      <div class="col-md-2 d-flex gap-2">
+        <button type="submit" class="btn btn-primary flex-fill"><i class="bi bi-funnel"></i> Apply</button>
+        <a href="{{ url_for('scrape_stats') }}" class="btn btn-outline-secondary">Reset</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<h2 class="section-title">Products found by brand</h2>
+
+{% if summary %}
+<div class="card mb-4">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead>
+        <tr>
+          <th rowspan="2" class="align-middle">Brand</th>
+          <th colspan="3" class="text-center table-active">Food</th>
+          <th colspan="3" class="text-center table-active">Non-Food</th>
+        </tr>
+        <tr>
+          <th class="text-center">Looked Up</th>
+          <th class="text-center">Found</th>
+          <th class="text-center">With Price</th>
+          <th class="text-center">Looked Up</th>
+          <th class="text-center">Found</th>
+          <th class="text-center">With Price</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in summary %}
+        <tr>
+          <td class="fw-semibold">{{ row.brand }}</td>
+          {% for cat in ['food', 'non_food'] %}
+            {% set c = row[cat] %}
+            <td class="text-center">{{ c.total }}</td>
+            <td class="text-center fw-bold {% if c.found == 0 and c.total > 0 %}text-danger{% endif %}">{{ c.found }}</td>
+            <td class="text-center">{{ c.with_price }}</td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+<div class="card"><div class="empty-state">
+  <i class="bi bi-bar-chart-line"></i>
+  No scrape stats recorded yet — stats appear here after a job runs scraper analysis.
+</div></div>
+{% endif %}
+
+<h2 class="section-title mt-4">Run history</h2>
+
+{% if runs %}
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Brand</th>
+          <th>Category</th>
+          <th class="text-center">Looked Up</th>
+          <th class="text-center">Found</th>
+          <th class="text-center">With Price</th>
+          <th>Job</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in runs %}
+        <tr>
+          <td>{{ s.date }}</td>
+          <td class="fw-semibold">{{ s.brand }}</td>
+          <td>
+            {% if s.category == 'food' %}
+              <span class="status-badge badge-completed">food</span>
+            {% else %}
+              <span class="status-badge badge-pending">non_food</span>
+            {% endif %}
+          </td>
+          <td class="text-center">{{ s.total }}</td>
+          <td class="text-center fw-bold">{{ s.found }}</td>
+          <td class="text-center">{{ s.with_price }}</td>
+          <td><code>{{ (s.job_id or '')[:8] }}</code></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+<div class="card"><div class="empty-state">
+  <i class="bi bi-calendar-x"></i>
+  No runs match the current filters.
+</div></div>
+{% endif %}
+
+{% endblock %}

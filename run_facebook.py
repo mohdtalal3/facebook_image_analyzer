@@ -56,7 +56,7 @@ from generate import make_comparison_image
 from image_pipeline import compress_under_limit
 from price_overlay import overlay_price_on_image
 from publish_wordpress import publish_brand
-from data_store import load_fb_auth
+from data_store import load_fb_auth, record_scrape_stats
 from constants import (
     FETCH_COMMENTS, ANALYZE_IMAGES, MAX_IMAGES_PER_POST, IMAGE_WORKERS,
     POSTS_PER_SOURCE_DEFAULT, MIN_IMAGES_FOR_KEEP,
@@ -790,6 +790,7 @@ def enrich_images_with_scrapes(job_dir: Path, brand: str, brand_slug: str, categ
     print("=" * 70)
 
     enriched = 0
+    with_price = 0
     pending = [(fn, entry) for fn, entry in analysis.items()
                if entry.get("product_name") and not entry.get("scraped")]
 
@@ -835,6 +836,8 @@ def enrich_images_with_scrapes(job_dir: Path, brand: str, brand_slug: str, categ
                     "product_url": result.get("product_url"),
                 }
                 enriched += 1
+                if result.get("price"):
+                    with_price += 1
                 print(f"  🔗 {filename} → {result.get('name')!r} — {result.get('price') or 'price not listed'}")
             else:
                 print(f"  🚫 {filename} — no product match for {entry.get('product_name')!r}")
@@ -843,6 +846,13 @@ def enrich_images_with_scrapes(job_dir: Path, brand: str, brand_slug: str, categ
         analysis_file.write_text(json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
     except Exception as e:
         print(f"  ⚠️  Could not write enriched analysis back to {analysis_file}: {e}")
+
+    try:
+        record_scrape_stats(brand, brand_slug, category, job_dir.name,
+                            total=len(to_scrape), found=enriched, with_price=with_price)
+    except Exception as e:
+        print(f"  ⚠️  Could not record scrape stats: {e}")
+
     print(f"✅ Scraper analysis: enriched {enriched}/{len(to_scrape)} {category} image(s).")
     return enriched
 
@@ -888,7 +898,7 @@ def render_image_prompt(template: str, brand: str, entry: dict) -> str:
     (lines starting with '#'), then substitute {store} and {product_name}
     from the KIE analysis + scraped data. Unknown placeholders are left
     untouched."""
-    product_name = entry.get("product_name") or (entry.get("scraped") or {}).get("name") or ""
+    product_name = (entry.get("scraped") or {}).get("name") or entry.get("product_name") or ""
     body = "\n".join(
         line for line in template.splitlines()
         if not line.lstrip().startswith("#")

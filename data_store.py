@@ -9,6 +9,7 @@ app.py itself (which would re-run the Flask app as a side effect).
 
 import json
 import threading
+from datetime import datetime
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
@@ -17,6 +18,7 @@ LOGS_DIR = DATA_DIR / "logs"
 WORKSPACES_FILE = DATA_DIR / "workspaces.json"
 JOBS_FILE = DATA_DIR / "jobs.json"
 FB_AUTH_FILE = DATA_DIR / "fb_auth.json"
+SCRAPER_STATS_FILE = DATA_DIR / "scraper_stats.json"
 OUTPUT_DIR = BASE_DIR / "output"
 EXPORTS_DIR = BASE_DIR / "exports"
 
@@ -34,6 +36,8 @@ if not FB_AUTH_FILE.exists():
         json.dumps({"cookie_string": "", "fb_dtsg": "", "updated_at": None}, indent=2),
         encoding="utf-8",
     )
+if not SCRAPER_STATS_FILE.exists():
+    SCRAPER_STATS_FILE.write_text("[]", encoding="utf-8")
 
 _lock = threading.Lock()
 
@@ -143,6 +147,35 @@ def save_fb_auth(cookie_string: str, fb_dtsg: str):
             }, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+
+
+# ── SCRAPER STATS (per-run product lookup results, shown on /scrape-stats) ──
+
+def load_scrape_stats() -> list:
+    with _lock:
+        return json.loads(SCRAPER_STATS_FILE.read_text(encoding="utf-8"))
+
+
+def record_scrape_stats(brand: str, brand_slug: str, category: str, job_id: str,
+                        total: int, found: int, with_price: int):
+    """Append one scrape-run summary record — how many products the brand
+    scraper looked up (total), how many matched (found) and how many of
+    those had a price (with_price). One record per brand+category per run."""
+    record = {
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "recorded_at": datetime.now().isoformat(),
+        "brand": brand,
+        "brand_slug": brand_slug,
+        "category": category,
+        "job_id": job_id,
+        "total": total,
+        "found": found,
+        "with_price": with_price,
+    }
+    with _lock:
+        stats = json.loads(SCRAPER_STATS_FILE.read_text(encoding="utf-8"))
+        stats.append(record)
+        SCRAPER_STATS_FILE.write_text(json.dumps(stats, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 # ── LOGS ────────────────────────────────────────────────────────────────────

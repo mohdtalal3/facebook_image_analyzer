@@ -55,6 +55,12 @@ AI_IMAGE_COMPARE = False            # when True, the output/published image is a
                                 # labeled ("AI GENERATED" / "ORIGINAL") so they're easy to compare.
                                 # Flip off for production publishing (clean AI image only).
 
+# ── publish_wordpress.py publishing ──
+SKIP_PRODUCTS_WITHOUT_PRICE = True   # when True, images whose analysis entry has no scraped
+                                # price (scraped.price) are skipped at publish time — they
+                                # never upload to WordPress or appear on the page. When
+                                # False, everything publishes (price shown only when known).
+
 # ── image_pipeline.py ──
 MAX_PROCESSED_BYTES = 204800      # 200 KB cap for processed (grayscale) images
 MIN_QUALITY = 20                      # floor for JPEG quality before we start downscaling

@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from bs4 import BeautifulSoup
 from curl_cffi import requests
@@ -121,9 +122,9 @@ class AldiSearcher:
 
         data = r.json()
 
-        # with open("aldi_first_response.json", "w", encoding="utf-8") as f:
-        #     json.dump(data, f, indent=2, ensure_ascii=False)
-        # print("✓ Raw first response saved to aldi_first_response.json")
+        with open("aldi_first_response.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        print("✓ Raw first response saved to aldi_first_response.json")
 
         if data.get("errors"):
             raise Exception(data["errors"])
@@ -159,7 +160,10 @@ class AldiSearcher:
 
         # 2) Fallback: related results, only if a query word matches the name
         if not product:
-            query_words = set(query.lower().split())
+            def words(text):
+                return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+            query_words = words(query)
             min_matches = min(2, len(query_words))
 
             for placement in placements:
@@ -180,8 +184,8 @@ class AldiSearcher:
                     continue
 
                 item = items[0]
-                name = (item.get("name") or "").lower()
-                if len(query_words & set(name.split())) >= min_matches:
+                name = item.get("name") or ""
+                if len(query_words & words(name)) >= min_matches:
                     product = item
                     break
 
@@ -285,7 +289,7 @@ if __name__ == "__main__":
 
     aldi.warmup()
 
-    product = aldi.search("Embossed Microfiber Sheet Set")
+    product = aldi.search("Reversible Porch Sign")
 
     if product:
 
