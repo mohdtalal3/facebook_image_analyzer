@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
 """
-Per-brand WordPress publisher — the Facebook-pipeline equivalent of
-publish_youtube.py.
+WordPress publisher for the Facebook pipeline — the publish stage of the
+single end-to-end job (run_facebook.py calls publish_brand() in Phase 3,
+once per category).
 
-Reads a completed scrape job's output for ONE brand
-(output/<parent_job_id>/<brand-slug>/food/) — the flat images/ folder plus
-its combined image_analysis.json (KIE product names) — uploads every food
-image to the brand's WordPress site, and updates the brand's configured
-WordPress page with a finds-item listing (same CSS classes/structure as the
-other RetailShout publishers).
+Each category has its OWN destination in the workspace: food can go to one
+website + page and non-food to another. publish_brand() handles a single
+category per call — it reads that category's output
+(output/<job_id>/<brand-slug>/<category>/ — the flat images/ folder plus its
+combined image_analysis.json with KIE product names), uploads every image to
+the category's configured WordPress site, and updates the category's page
+with a finds-item listing (same CSS classes/structure as the other
+RetailShout publishers). Food pages group items by their KIE subcategory;
+a non-food page renders one "Non-Food" section.
 
-Only the food category is published — non_food/uncategorized output is
-ignored. Credentials come from the root .env:
+Credentials come from the root .env:
   retailshout -> WP_URL_RS / WP_USERNAME_RS / WP_PASSWORD_RS
   aos         -> WP_URL / WP_USERNAME / WP_PASSWORD
 
-Usage (normally launched by job_runner.py, not by hand):
+Usage (normally called from run_facebook.py, not by hand):
   python publish_wordpress.py --parent-job-id <uuid> --brand "ALDI" \
-      --brand-slug aldi --page-id 12345 --publish-target retailshout
+      --brand-slug aldi --category food --page-id 12345 \
+      --publish-target retailshout
 """
 
 import argparse
@@ -63,11 +67,11 @@ SUBCATEGORIES = [
 ITEMS_PER_CATEGORY_LIMIT = 20  # items visible per subcategory before "Show more"
 
 
-def load_food_images(brand_dir: Path) -> tuple[list[Path], dict]:
-    """Load the brand's food-category flat images + their KIE analysis
-    mapping. Returns ([image paths], {filename: analysis entry})."""
-    images_dir = brand_dir / "images"
-    analysis_file = brand_dir / "image_analysis.json"
+def load_category_images(category_dir: Path) -> tuple[list[Path], dict]:
+    """Load one category's flat images + their KIE analysis mapping.
+    Returns ([image paths], {filename: analysis entry})."""
+    images_dir = category_dir / "images"
+    analysis_file = category_dir / "image_analysis.json"
 
     analysis = {}
     if analysis_file.exists():
@@ -239,64 +243,83 @@ def build_subcategory_section(subcategory: str, items: list[tuple]) -> str:
     return html
 
 
-def build_page_html(items: list[tuple], brand: str) -> str:
-    """Build the full WordPress page HTML, grouped by KIE subcategory with a
-    table of contents. `items` is [(name, img_url)] or
-    [(name, img_url, price, description, subcategory)]. Items with a null or
-    unrecognized subcategory land in "Other"."""
-    groups: dict[str, list[tuple]] = {}
+def build_page_html(items: list[tuple], brand: str, category: str = "food") -> str:
+    """Build the full WordPress page HTML for ONE category's page (each
+    category publishes to its own website + page). `items` is [(name,
+    img_url)] or [(name, img_url, price, description, subcategory)]. Food
+    items are grouped by KIE subcategory (null/unrecognized → "Other");
+    non-food items land in a single "Non-Food" section. The heading follows
+    the category ("Food Finds" / "Non-Food Finds")."""
+    total = len(items)
+    html = '<div id="top" class="aos-finds">\n'
+    if category == "non_food":
+        html += f'  <h3 style="text-align: center;">{escape(brand)} Non-Food Finds</h3>\n\n'
+        html += f'  <p style="text-align: center; font-style: italic;">{total} products found</p>\n\n'
+        html += build_toc(["Non-Food"])
+        html += "\n\n"
+        html += build_subcategory_section("Non-Food", items) + "\n"
+        html += '</div>'
+        return html
+
+    heading = "Food Finds"
+    food_groups: dict[str, list[tuple]] = {}
     for item in items:
         sub = item[4] if len(item) > 4 and item[4] else "Other"
         if sub not in SUBCATEGORIES:
             sub = "Other"
-        groups.setdefault(sub, []).append(item)
+        food_groups.setdefault(sub, []).append(item)
 
-    ordered = [s for s in SUBCATEGORIES if s in groups]
-    if "Other" in groups:
+    ordered = [s for s in SUBCATEGORIES if s in food_groups]
+    if "Other" in food_groups:
         ordered.append("Other")
 
-    total = len(items)
-    html = '<div id="top" class="aos-finds">\n'
-    html += f'  <h3 style="text-align: center;">{escape(brand)} Food Finds</h3>\n\n'
+    html += f'  <h3 style="text-align: center;">{escape(brand)} {heading}</h3>\n\n'
     html += f'  <p style="text-align: center; font-style: italic;">{total} products found</p>\n\n'
     html += build_toc(ordered)
     html += "\n\n"
     for sub in ordered:
-        html += build_subcategory_section(sub, groups[sub]) + "\n"
+        html += build_subcategory_section(sub, food_groups[sub]) + "\n"
     html += '</div>'
     return html
 
 
 def build_page_title(brand: str, template: str | None = None,
-                     week_start_day: str | None = None, today=None) -> str:
-    """Page title for a brand's weekly finds update. Per-brand config comes
-    from the workspace (brands[].page_title template + brands[].week_start
-    day); placeholders {brand} and {date_range} are substituted. The week
-    window defaults to Friday → Thursday (ALDI's ad-week); Publix etc. can
-    set their own start day. Default template:
-    "Just Spotted at ALDI: This Week's Food Finds Everyone's Grabbing (9/11 – 9/17)"."""
+                     week_start_day: str | None = None, today=None,
+                     category: str = "food") -> str:
+    """Page title for a brand's weekly finds update. Config comes from the
+    workspace (page_title template + week_start day); placeholders {brand}
+    and {date_range} are substituted. The week window defaults to
+    Friday → Thursday (ALDI's ad-week); Publix etc. can set their own start
+    day. The default template is category-aware:
+    "Just Spotted at ALDI: This Week's Food Finds Everyone's Grabbing (9/11 – 9/17)".
+    A custom workspace template is used as-is for both categories' pages."""
     today = today or date.today()
     start_idx = WEEKDAY_INDEX.get((week_start_day or "friday").strip().lower(), 4)
     days_since_start = (today.weekday() - start_idx) % 7
     week_start = today - timedelta(days=days_since_start)
     week_end = week_start + timedelta(days=6)
     date_range = f"{week_start.month}/{week_start.day} – {week_end.month}/{week_end.day}"
+    label = "Non-Food Finds Everyone’s Grabbing" if category == "non_food" \
+        else "Food Finds Everyone’s Grabbing"
     tpl = (template or "").strip() or \
-        "Just Spotted at {brand}: This Week’s Food Finds Everyone’s Grabbing ({date_range})"
+        f"Just Spotted at {{brand}}: This Week’s {label} ({{date_range}})"
     return tpl.replace("{brand}", brand).replace("{date_range}", date_range)
 
 
-def publish_brand(parent_job_id: str, brand: str, brand_slug: str, page_id: str,
-                  publish_target: str, output_root: str = "output",
+def publish_brand(parent_job_id: str, brand: str, brand_slug: str, category: str,
+                  page_id: str, publish_target: str, output_root: str = "output",
                   status: str = "draft", page_title: str | None = None,
                   week_start_day: str | None = None) -> tuple[bool, str]:
-    """Publish one brand's food images from a completed scrape job's output.
-    `page_title` is the workspace's per-brand title template ({brand} and
-    {date_range} placeholders); `week_start_day` shifts the date window
-    (e.g. 'friday' for ALDI, 'tuesday' for Publix). Both default to the
-    generic template + Friday window. Returns (success, summary message).
-    Called by run_brand_job.py (the per-brand sub-workflow) and by this
-    file's CLI."""
+    """Publish ONE category (food or non_food) of one brand from a completed
+    pipeline job's output to its own website + WordPress page — food and
+    non-food are configured (and published) separately, so this is called
+    once per category by run_facebook.py. `page_title` is the workspace's
+    title template ({brand} and {date_range} placeholders); `week_start_day`
+    shifts the date window (e.g. 'friday' for ALDI, 'tuesday' for Publix).
+    Both default to the category-aware template + Friday window. Returns
+    (success, summary message). Also used by this file's CLI."""
+    if category not in ("food", "non_food"):
+        return False, f"Unknown category {category!r} — must be 'food' or 'non_food'."
     target = PUBLISH_TARGETS.get(publish_target) or PUBLISH_TARGETS["retailshout"]
     wp_url = os.environ.get(target["env"][0])
     wp_username = os.environ.get(target["env"][1])
@@ -305,26 +328,19 @@ def publish_brand(parent_job_id: str, brand: str, brand_slug: str, page_id: str,
         return False, (f"Missing WordPress credentials for {target['site_name']} — set "
                        f"{' / '.join(target['env'])} in .env")
 
-    brand_dir = Path(output_root) / parent_job_id / brand_slug / "food"
-    images, analysis = load_food_images(brand_dir)
-
-    non_food_dir = brand_dir.parent / "non_food" / "images"
-    if non_food_dir.exists():
-        excluded = sorted(p for p in non_food_dir.iterdir() if p.is_file())
-        if excluded:
-            print(f"🚫 {brand}: {len(excluded)} non-food image(s) excluded from publishing "
-                  f"(in {non_food_dir})")
-
+    category_dir = Path(output_root) / parent_job_id / brand_slug / category
+    images, analysis = load_category_images(category_dir)
     if not images:
-        return False, f"No food images found for {brand} under {brand_dir} — nothing to publish."
-    print(f"📋 {brand}: {len(images)} food image(s) from job {parent_job_id[:8]}...")
+        return False, (f"No {category} images found for {brand} under {category_dir} "
+                       f"— nothing to publish.")
+    print(f"📋 {brand}: {len(images)} {category} image(s) from job {parent_job_id[:8]}...")
 
     publisher = WordPressPublisher(wp_url, wp_username, wp_password)
     if not publisher.test_connection():
         return False, f"WordPress connection failed for {target['site_name']}"
 
-    print(f"\n📤 Uploading images to {target['site_name']}...")
-    items: list[tuple[str, str]] = []
+    print(f"\n📤 Uploading {len(images)} image(s) to {target['site_name']}...")
+    uploaded: list[tuple] = []
     for i, img_path in enumerate(images, start=1):
         entry = analysis.get(img_path.name) or {}
         scraped = entry.get("scraped") or {}
@@ -341,19 +357,19 @@ def publish_brand(parent_job_id: str, brand: str, brand_slug: str, page_id: str,
             print(f"  ⚠️  Could not resolve URL for media {media_id}: {e}")
             source_url = None
         if source_url:
-            items.append((name, source_url, scraped.get("price"), scraped.get("description"),
-                          entry.get("subcategory")))
+            uploaded.append((name, source_url, scraped.get("price"), scraped.get("description"),
+                             entry.get("subcategory")))
             price_note = f" ({scraped.get('price')})" if scraped.get("price") else ""
             print(f"  [{i}] ✅ Uploaded '{title}'{price_note}")
 
-    if not items:
+    if not uploaded:
         return False, "No images uploaded successfully — nothing to publish."
 
-    print(f"\n🎨 Building page HTML ({len(items)} item(s))...")
-    html = build_page_html(items, brand)
+    print(f"\n🎨 Building page HTML ({len(uploaded)} item(s))...")
+    html = build_page_html(uploaded, brand, category)
 
     page_title = build_page_title(brand, template=page_title,
-                                  week_start_day=week_start_day)
+                                  week_start_day=week_start_day, category=category)
     print(f"\n📤 Updating WordPress page {page_id} as {status.upper()}...")
     print(f"   Title: {page_title}")
     success = publisher.update_page(
@@ -367,24 +383,27 @@ def publish_brand(parent_job_id: str, brand: str, brand_slug: str, page_id: str,
     if not success:
         return False, f"WordPress page {page_id} update failed."
 
-    summary = (f"Brand {brand} → {target['site_name']} page {page_id}: "
-               f"{len(items)} product(s) published as {status.upper()}")
+    summary = (f"Brand {brand} {category} → {target['site_name']} page {page_id}: "
+               f"{len(uploaded)} product(s) published as {status.upper()}")
     print("\n" + "=" * 60)
     print("✅ PUBLISHED SUCCESSFULLY!")
     print(f"   Brand    : {brand}")
+    print(f"   Category : {category}")
     print(f"   Target   : {target['site_name']}")
     print(f"   Page ID  : {page_id}")
-    print(f"   Products : {len(items)}")
+    print(f"   Products : {len(uploaded)}")
     print(f"   Status   : {status.upper()}")
     print("=" * 60)
     return True, summary
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Publish one brand's food images to WordPress")
-    parser.add_argument("--parent-job-id", required=True, help="Scrape job id whose output/<id>/ holds the images")
+    parser = argparse.ArgumentParser(description="Publish one category of one brand's images to WordPress")
+    parser.add_argument("--parent-job-id", required=True, help="Pipeline job id whose output/<id>/ holds the images")
     parser.add_argument("--brand", required=True, help="Canonical brand name (e.g. 'ALDI')")
     parser.add_argument("--brand-slug", required=True, help="Output folder slug (e.g. 'aldi')")
+    parser.add_argument("--category", default="food", choices=["food", "non_food"],
+                        help="Which category to publish — each category has its own page")
     parser.add_argument("--page-id", required=True, help="WordPress page/post ID to update")
     parser.add_argument("--publish-target", default="retailshout", choices=sorted(PUBLISH_TARGETS))
     parser.add_argument("--output-root", default="output")
@@ -398,11 +417,13 @@ def main():
         parent_job_id=args.parent_job_id,
         brand=args.brand,
         brand_slug=args.brand_slug,
+        category=args.category,
         page_id=args.page_id,
         publish_target=args.publish_target,
         output_root=args.output_root,
         status=status,
     )
+    print(message)
     sys.exit(0 if ok else 1)
 
 

@@ -14,9 +14,9 @@
     </h1>
     <small style="color:#64748b;font-size:12px;">
       ID: {{ job.id }}
-      {% if job.job_kind in ('brand', 'publish') %}
-        &middot; <span class="badge" style="background:#fef3c7;color:#92400e;font-weight:600;font-size:10px;">
-          <i class="bi bi-cloud-upload me-1"></i>Brand: {{ job.brand }}
+      {% if job.brand %}
+        &middot; <span class="badge" style="background:#dbeafe;color:#1e40af;font-weight:600;font-size:10px;">
+          <i class="bi bi-shop me-1"></i>{{ job.brand }}
         </span>
       {% endif %}
     </small>
@@ -84,6 +84,10 @@
         ('processing_images','Processing images'),
         ('analyzing_products','Analyzing products'),
         ('creating_json','Creating JSON'),
+        ('deduplicating','Deduplicating'),
+        ('scraping_products','Scraping products'),
+        ('generating_ai_images','AI images'),
+        ('publishing','Publishing'),
         ('done','Completed'),
       ] %}
       <span class="step-pill" data-step="{{ key }}" style="padding:5px 12px;border-radius:20px;font-size:12px;font-weight:600;background:#f1f5f9;color:#94a3b8;">{{ label }}</span>
@@ -92,10 +96,10 @@
   </div>
 </div>
 
-<!-- Sources list (scrape jobs) / brand job details (brand jobs) -->
-{% if job.job_kind in ('brand', 'publish') %}
+<!-- Brand/publish details (any job that carries the workspace's brand config) -->
+{% if job.brand %}
 <div class="card mb-4">
-  <div class="card-header"><i class="bi bi-cloud-upload me-2" style="color:#d97706"></i>Brand Job Details</div>
+  <div class="card-header"><i class="bi bi-shop me-2" style="color:#3b82f6"></i>Brand &amp; Publishing</div>
   <div class="card-body p-0">
     <table class="table mb-0" style="font-size:13px;">
       <tr>
@@ -103,13 +107,29 @@
         <td class="pe-4" style="padding:10px 16px 10px 0;font-weight:600;">{{ job.brand }}</td>
       </tr>
       <tr>
-        <td class="ps-4 text-muted" style="padding:10px 0 10px 16px;">Publish Target</td>
-        <td class="pe-4" style="padding:10px 16px 10px 0;font-weight:600;">{{ job.publish_target }}</td>
+        <td class="ps-4 text-muted" style="padding:10px 0 10px 16px;">Categories</td>
+        <td class="pe-4" style="padding:10px 16px 10px 0;font-weight:600;">
+          {% for c in job.categories or ['food', 'non_food'] %}
+            <span class="badge" style="background:#dcfce7;color:#15803d;font-weight:600;font-size:10.5px;">{{ c.replace('_', '-') | capitalize }}</span>
+          {% endfor %}
+        </td>
       </tr>
       <tr>
-        <td class="ps-4 text-muted" style="padding:10px 0 10px 16px;">WordPress Page ID</td>
+        <td class="ps-4 text-muted" style="padding:10px 0 10px 16px;">Publishing</td>
         <td class="pe-4" style="padding:10px 16px 10px 0;">
-          {% if job.page_id %}<code>{{ job.page_id }}</code>{% else %}<span class="text-muted">Not set — publishing skipped</span>{% endif %}
+          {% if job.food_publish_target is defined %}
+            <div style="font-size:12.5px;margin-bottom:3px;">
+              <span style="font-weight:600;color:#334155;">Food</span>
+              <span class="text-muted" style="font-size:11px;">→ {{ job.food_publish_target or 'retailshout' }}{% if job.food_page_id %} · page {{ job.food_page_id }}{% else %} · not set (skipped){% endif %}</span>
+            </div>
+            <div style="font-size:12.5px;">
+              <span style="font-weight:600;color:#334155;">Non-Food</span>
+              <span class="text-muted" style="font-size:11px;">→ {{ job.non_food_publish_target or 'retailshout' }}{% if job.non_food_page_id %} · page {{ job.non_food_page_id }}{% else %} · not set (skipped){% endif %}</span>
+            </div>
+          {% else %}
+            <span style="font-weight:600;">{{ job.publish_target }}</span>
+            {% if job.page_id %}<code>{{ job.page_id }}</code>{% else %}<span class="text-muted">Not set — publishing skipped</span>{% endif %}
+          {% endif %}
         </td>
       </tr>
       {% if job.parent_job_id %}
@@ -123,7 +143,10 @@
     </table>
   </div>
 </div>
-{% else %}
+{% endif %}
+
+<!-- Sources list -->
+{% if job.sources %}
 <div class="card mb-4">
   <div class="card-header"><i class="bi bi-facebook me-2" style="color:#1877f2"></i>Sources ({{ job.sources | length }})</div>
   <div class="card-body p-0">
@@ -173,7 +196,7 @@
   const downloadBtn = document.getElementById('downloadBtn');
   const postCountVal = document.getElementById('postCountVal');
 
-  const STEP_ORDER = ['fetching_posts','fetching_comments','downloading_images','processing_images','analyzing_products','creating_json','done'];
+  const STEP_ORDER = ['fetching_posts','fetching_comments','downloading_images','processing_images','analyzing_products','creating_json','deduplicating','scraping_products','generating_ai_images','publishing','done'];
 
   let pollInterval = null;
   let lastLogLen = 0;

@@ -139,6 +139,10 @@
               <span class="badge" style="background:#fef3c7;color:#92400e;font-weight:600;font-size:10px;">
                 <i class="bi bi-cloud-upload me-1"></i>Brand: {{ job.brand }}
               </span>
+            {% elif job.brand %}
+              <span class="badge" style="background:#dbeafe;color:#1e40af;font-weight:600;font-size:10px;">
+                <i class="bi bi-shop me-1"></i>{{ job.brand }}
+              </span>
             {% else %}
               <span class="badge bg-light text-dark border" style="font-size:10px;">Scrape</span>
             {% endif %}

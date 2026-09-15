@@ -4,7 +4,7 @@ everything else in constants.py is untouched. Values are written back as
 Python literals on the same line, preserving any trailing comment.
 
 Note: the Flask process imports constants at startup, but the pipeline runs
-as fresh subprocesses (run_facebook.py / run_brand_job.py) that re-import
+as the fresh run_facebook.py subprocess that re-imports
 constants.py on every launch — so saved changes apply to newly launched jobs
 without restarting the app."""
 

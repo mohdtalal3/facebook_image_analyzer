@@ -1,35 +1,43 @@
 #!/usr/bin/env python3
 """
-Facebook pipeline — PHASE 1 (discovery + brand filter). Invoked as a
-subprocess by job_runner.py.
+Facebook pipeline — single end-to-end job. Invoked as a subprocess by
+job_runner.py. One job does everything for the workspace's ONE brand:
 
-For every configured source (page / group / post URL):
-  1. Identify + resolve the source
-  2. Fetch posts in the [start_date, end_date] window (page/group) or the
-     single post (post URL), applying the min-comments threshold
-  3. Detect a single canonical retailer brand from the post's text
-     (brand_mapping.py) — zero or multiple detected brands skips the post
-     before any image cost is spent; with a brands config, only configured
-     brands pass
-  4. Stop there: each surviving post is written — with its text, image
-     URLs, and `last_media_id` (the handle for paging in any images beyond
-     the ones already in its GraphQL node) — to a per-brand manifest:
-       output/<job_id>/<brand-slug>/posts.json
+  1. DISCOVERY — resolve every source and fetch its post list first
+     (page/group with download_images=False, fetch_extra_images=False; just
+     the post ID for a post URL), logging per-source and total found counts
+     before any per-post work starts. The brand text filter runs inside the
+     scrapers' pagination loop, before a matching post's images are even
+     enumerated.
+  2. PROCESSING — per discovered post: extra-image discovery via
+     last_media_id → download → grayscale/compress → KIE analysis → keep
+     only if it has enough images AND its category is selected in the
+     workspace (food / non_food) → organize into
+     output/<job_id>/<brand-slug>/<category>/post_<id>/.
+  3. PUBLISH PREP — per selected category: duplicate-product removal,
+     scraper analysis (name/price/description from the brand's own site),
+     AI image regeneration + price badges.
+  4. PUBLISH — each selected category publishes to its OWN website +
+     WordPress page (food and non-food are configured separately in the
+     workspace; a category without a page ID is skipped), via
+     publish_wordpress.publish_brand().
 
-NO image bytes are downloaded here and no KIE analysis runs — that is the
-per-brand sub-workflow's job (run_brand_job.py, launched by job_runner.py
-after this job completes): extra-image discovery via last_media_id →
-download → process → analyze → organize → publish.
+The workspace's single-brand config arrives as CLI args from job_runner.py:
+--brand, --food-publish-target/--food-page-id,
+--non-food-publish-target/--non-food-page-id, --image-prompt,
+--page-title, --week-start, --categories.
 
 One failing post/source never aborts the whole job — failures are logged
-and the run continues.
+and the run continues. A publish failure DOES fail the job (exit 1).
 """
 
 import argparse
+import difflib
 import json
 import re
 import shutil
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -42,13 +50,36 @@ import brand_mapping
 import fb_client
 import image_pipeline
 import kie_vision
+import scrapers
+import generate
+from generate import make_comparison_image
+from image_pipeline import compress_under_limit
+from price_overlay import overlay_price_on_image
+from publish_wordpress import publish_brand
 from data_store import load_fb_auth
 from constants import (
     FETCH_COMMENTS, ANALYZE_IMAGES, MAX_IMAGES_PER_POST, IMAGE_WORKERS,
     POSTS_PER_SOURCE_DEFAULT, MIN_IMAGES_FOR_KEEP,
+    AI_IMAGE_COMPARE, AI_IMAGE_MAX_BYTES, AI_IMAGE_WORKERS,
+    DEDUPE_PRODUCTS, DEDUPE_THRESHOLD, GENERATE_AI_IMAGES,
+    PRICE_ON_IMAGE, SCRAPER_ANALYSIS, SCRAPER_WORKERS,
 )
 
 SOURCE_MAX_ATTEMPTS = 3
+
+# The categories a workspace can select (food / non-food, or both). Anything
+# a post is categorized as that isn't selected is discarded after analysis;
+# "uncategorized" posts are always kept on disk for debugging but never
+# published.
+CATEGORIES = ("food", "non_food")
+
+
+def parse_categories_arg(value: str | None) -> list[str]:
+    """Parse the --categories CLI value ("food,non_food") into a validated
+    list. Unrecognized/missing values fall back to both categories."""
+    selected = [c.strip().lower() for c in (value or "").split(",") if c.strip()]
+    valid = [c for c in CATEGORIES if c in selected]
+    return valid or list(CATEGORIES)
 
 
 def _with_source_retries(description: str, fn, max_attempts: int = SOURCE_MAX_ATTEMPTS):
@@ -82,40 +113,26 @@ def parse_date_arg(value: str | None, end_of_day: bool = False) -> datetime | No
     return d
 
 
-def load_brand_config(path: str | None) -> list[dict]:
-    """Load the workspace's brand configurations (from job_runner's temp
-    file): [{"brand": ..., "page_id": ..., "publish_target": ...}, ...].
-    Missing/empty file means no brand scoping — every single-detected brand
-    passes (old behavior, for workspaces without a brands config)."""
-    if not path or not Path(path).exists():
-        return []
-    try:
-        brands = json.loads(Path(path).read_text(encoding="utf-8"))
-        return [b for b in brands if isinstance(b, dict) and b.get("brand")]
-    except Exception as e:
-        print(f"⚠️  Could not load brands file: {e}")
-    return []
-
-
-def make_brand_filter(brand_configs: list[dict]):
-    """Build the post-text brand filter from the workspace's configured
-    brands. With brands configured, only posts whose single detected brand
-    is one of them pass — every other brand's posts are rejected inside the
-    scraper's pagination loop, before their images are even enumerated.
-    With no brands configured, any single detected brand passes (legacy
-    behavior for workspaces that never set brands up)."""
-    configured = {b["brand"] for b in brand_configs}
-    if not configured:
+def make_brand_filter(brand: str | None):
+    """Build the post-text brand filter from the workspace's single brand.
+    With a brand configured, only posts whose single detected brand is that
+    brand pass — every other brand's posts are rejected inside the scraper's
+    pagination loop, before their images are even enumerated. Without one,
+    any single detected brand passes."""
+    if not brand:
         return lambda text: brand_mapping.detect_single_brand(text) is not None
-    return lambda text: brand_mapping.detect_single_brand(text) in configured
+    return lambda text: brand_mapping.detect_single_brand(text) == brand
 
 
 def make_per_brand_limiter(brand_filter, limit: int):
-    """Wrap the brand filter with a per-brand acceptance cap (testing aid):
-    once `limit` posts of a brand have been accepted, every further post of
-    that brand is rejected — for page/group sources this happens inside the
+    """Wrap the brand filter with an acceptance cap (testing aid): once
+    `limit` posts of a brand have been accepted, every further post of that
+    brand is rejected — for page/group sources this happens inside the
     scraper's pagination loop (the filter IS the text_filter), before that
-    post's images are even enumerated. limit <= 0 means unlimited."""
+    post's images are even enumerated. limit <= 0 means unlimited. The
+    counter is shared across every source in the job, and each post is
+    evaluated exactly once (page/group: at discovery; post URLs: in
+    process_post_url), so the cap is per job, not per source."""
     if not limit or limit < 1:
         return brand_filter
     counts: dict[str, int] = {}
@@ -199,8 +216,6 @@ def _process_one_image(orig_path_str: str, index: int, processed_dir: Path, post
         category = analysis.get("category") or "uncategorized"
         product = analysis.get("product_name")
         print(f"  🖼️  {orig_path.name} → {category}" + (f" — {product}" if product else ""))
-        if category == "non_food":
-            print(f"  🚫 {orig_path.name} rejected for publishing — non-food")
 
     image_entry = {
         "image_id": image_id,
@@ -259,8 +274,8 @@ def finalize_post(staging_root: Path, post_id: str, post_url, page_url, page_nam
                    published_at, comment_count, comments, orig_image_paths) -> dict:
     """Writes the post's data under staging_root/post_<id> — a scratch
     location, not the final output path. organize_or_discard() below moves
-    it into output/<job_id>/<brand>/<category>/ (or deletes it) once the
-    brand/image-count filter has been applied."""
+    it into output/<job_id>/<brand>/<category>/post_<id>/ (or deletes it)
+    once the image-count/category filters have been applied."""
     post_dir = staging_root / f"post_{post_id}"
     canonical_orig_dir = post_dir / "images" / "original"
     canonical_orig_dir.mkdir(parents=True, exist_ok=True)
@@ -333,9 +348,15 @@ def category_from_mapping(mapping: dict) -> str:
     return "uncategorized"
 
 
-def organize_or_discard(job_dir: Path, staging_root: Path, post_id: str, text_brand: str, mapping: dict) -> bool:
-    """Applies the image-requirement filter and either moves the staged post
-    into output/<job_id>/<brand>/<category>/post/post_<id>/ or discards it.
+def organize_or_discard(job_dir: Path, staging_root: Path, post_id: str, text_brand: str,
+                        mapping: dict, allowed_categories: list[str]) -> bool:
+    """Applies the image-requirement + category-selection filters and either
+    moves the staged post into
+    output/<job_id>/<brand>/<category>/post/post_<id>/ or discards it.
+
+    A post whose unanimous image category isn't selected in the workspace
+    (food / non_food — "uncategorized" always stays on disk for debugging,
+    though it is never published) is discarded right here.
 
     Also mirrors the kept post's images into a flat <brand>/<category>/images/
     folder and merges its mapping into a category-wide
@@ -354,6 +375,11 @@ def organize_or_discard(job_dir: Path, staging_root: Path, post_id: str, text_br
         return False
 
     category = category_from_mapping(mapping)
+    if category != "uncategorized" and category not in allowed_categories:
+        print(f"  🗑️  Discarding post {post_id} — category '{category}' is not selected in this workspace")
+        shutil.rmtree(staged_dir, ignore_errors=True)
+        return False
+
     brand_slug = brand_mapping.brand_slug(text_brand)
     category_dir = job_dir / brand_slug / category
     dest_dir = category_dir / "post" / f"post_{post_id}"
@@ -382,14 +408,12 @@ def organize_or_discard(job_dir: Path, staging_root: Path, post_id: str, text_br
     category_analysis_file.write_text(json.dumps(combined, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print(f"  📁 Kept post {post_id} → {brand_slug}/{category}/")
-    if category == "non_food":
-        print(f"  🚫 Post {post_id} categorized non_food — kept on disk but excluded from WordPress publishing")
     return True
 
 
 def discover_post_url(url: str, cookies: dict) -> str | None:
-    """Discovery phase for a bare post URL: resolve its post ID only — no
-    text/comments/images are fetched yet."""
+    """Discovery phase for a bare post URL: resolve its post ID only — the
+    post's text/media/images are all fetched in process_post_url() below."""
     post_id = fb_client.resolve_post_id(url, cookies=cookies)
     if not post_id:
         print(f"  ❌ Could not resolve post ID from {url}")
@@ -397,7 +421,12 @@ def discover_post_url(url: str, cookies: dict) -> str | None:
 
 
 def process_post_url(job_dir: Path, post_id: str, url: str, cookies: dict, skip_ids: set,
-                     brand_filter) -> tuple[str | None, dict]:
+                     brand_filter, allowed_categories: list[str]) -> tuple[str | None, dict]:
+    """Full processing for one bare post URL: meta fetch → brand check →
+    album download via media_id → process/analyze → organize. The brand
+    filter here is the effective (limit-aware) one — this is the only place
+    a post URL's text is checked, so the testing cap applies to post URLs
+    too."""
     if post_id in skip_ids:
         print(f"  ⏭️  Already processed in a previous run: {post_id}")
         return None, {}
@@ -413,7 +442,7 @@ def process_post_url(job_dir: Path, post_id: str, url: str, cookies: dict, skip_
         print(f"  🗑️  Skipping post {post_id} — no single retailer brand detected in post text")
         return post_id, {}
     if not brand_filter(meta.get("text")):
-        print(f"  🗑️  Skipping post {post_id} — brand '{text_brand}' is not configured in this workspace")
+        print(f"  🗑️  Skipping post {post_id} — brand '{text_brand}' does not match this workspace's brand")
         return post_id, {}
 
     post_info = None
@@ -453,7 +482,7 @@ def process_post_url(job_dir: Path, post_id: str, url: str, cookies: dict, skip_
         published_at=meta.get("published_at"), comment_count=len(comments),
         comments=comments, orig_image_paths=image_paths,
     )
-    kept = organize_or_discard(job_dir, staging_root, post_id, text_brand, mapping)
+    kept = organize_or_discard(job_dir, staging_root, post_id, text_brand, mapping, allowed_categories)
     return post_id, (mapping if kept else {})
 
 
@@ -471,14 +500,13 @@ def discover_page_or_group_posts(job_dir: Path, url: str, src_type: str, cookies
     detected retailer never triggers extract_media() at all (see CONTEXT.md
     Design Decision 19).
 
-    fetch_extra_images=False on top of that: for a post with more than 5
-    photos, only the 5 already present in its own GraphQL node are
-    discovered here — the paginated lookup for the rest (one GraphQL request
-    per extra photo, previously incurred even for a discovery-only pass) is
-    deferred to process_page_or_group_posts() -> fb_client.download_pending_post_images(),
-    via the `last_media_id` recorded on each post. Returns everything
-    process_page_or_group_posts() below needs, or None if the source
-    couldn't be resolved."""
+    fetch_extra_images=False on top of that: for a post with more photos
+    than its own GraphQL node carries, only those node photos are discovered
+    here — the paginated lookup for the rest (one GraphQL request per extra
+    photo) is deferred to process_page_or_group_posts() ->
+    fb_client.download_pending_post_images(), via the `last_media_id`
+    recorded on each post. Returns everything process_page_or_group_posts()
+    below needs, or None if the source couldn't be resolved."""
     print("[STAGE] fetching_posts")
     # Unique per call (not just per URL) so a source-level retry gets a clean
     # scratch dir — otherwise the scraper's post_already_exists() check would
@@ -519,9 +547,10 @@ def discover_page_or_group_posts(job_dir: Path, url: str, src_type: str, cookies
 
 
 def process_page_or_group_posts(job_dir: Path, discovered: dict, cookies: dict,
-                                 skip_ids: set, brand_filter) -> tuple[list[str], dict]:
+                                 skip_ids: set, brand_filter,
+                                 allowed_categories: list[str]) -> tuple[list[str], dict]:
     """Processing phase for one discovered page/group source: brand
-    detection, comments, image download/processing/analysis, and
+    re-check, comments, image download/processing/analysis, and
     filter/organize — for every post discover_page_or_group_posts() already
     found."""
     url = discovered["url"]
@@ -547,7 +576,9 @@ def process_page_or_group_posts(job_dir: Path, discovered: dict, cookies: dict,
         # post reaching this line already passed it. This just re-derives the
         # actual brand string (the filter only returned True/False) for
         # organize_or_discard() below; it's a defensive fallback, not the
-        # primary filter point.
+        # primary filter point. NOTE: the plain filter is used here, NOT the
+        # limit-aware one — the limiter's counter already counted this post
+        # at discovery, and counting it again here would push it over the cap.
         text_brand = brand_mapping.detect_single_brand(post.get(text_key))
         print(f"  🏷️  Post {post_id} brand: {text_brand or '(none / ambiguous)'} — text: {(post.get(text_key) or '')[:150]!r}")
         if not text_brand:
@@ -555,7 +586,7 @@ def process_page_or_group_posts(job_dir: Path, discovered: dict, cookies: dict,
             processed_ids.append(post_id)
             continue
         if not brand_filter(post.get(text_key)):
-            print(f"  🗑️  Skipping post {post_id} — brand '{text_brand}' is not configured in this workspace")
+            print(f"  🗑️  Skipping post {post_id} — brand '{text_brand}' does not match this workspace's brand")
             processed_ids.append(post_id)
             continue
 
@@ -585,7 +616,7 @@ def process_page_or_group_posts(job_dir: Path, discovered: dict, cookies: dict,
             comment_count=post.get("comment_count", len(comments)),
             comments=comments, orig_image_paths=orig_images,
         )
-        kept = organize_or_discard(job_dir, staging_root, post_id, text_brand, mapping)
+        kept = organize_or_discard(job_dir, staging_root, post_id, text_brand, mapping, allowed_categories)
         if kept:
             all_mapping.update(mapping)
         processed_ids.append(post_id)
@@ -594,38 +625,367 @@ def process_page_or_group_posts(job_dir: Path, discovered: dict, cookies: dict,
     return processed_ids, all_mapping
 
 
+# ── PUBLISH PREP — duplicate removal, scraper analysis, AI images ────────────
+# These stages run per selected category on the organized output
+# (output/<job_id>/<brand-slug>/<category>/) before publishing. They are
+# idempotent (flags on each analysis entry — scraped / price_overlaid /
+# ai_image — make re-runs skip already-processed images).
+
+def normalize_name(name: str) -> str:
+    """Lowercase, strip punctuation/extra whitespace — the comparison form
+    for duplicate-product detection."""
+    return " ".join("".join(ch if ch.isalnum() else " " for ch in name.lower()).split())
+
+
+def is_duplicate_name(name: str, seen_norms: list[str], threshold: float) -> bool:
+    """True if `name` (already normalized) is near-identical to any name seen
+    so far — difflib similarity ratio >= threshold. Exact matches after
+    normalization always count."""
+    return any(name == other or difflib.SequenceMatcher(None, name, other).ratio() >= threshold
+               for other in seen_norms)
+
+
+def dedupe_category_images(job_dir: Path, brand_slug: str, category: str) -> int:
+    """Remove duplicate products from <category>/image_analysis.json —
+    different posts/pages often show the same product, so before scraper
+    analysis and publishing, every entry's product name is normalized and
+    compared against the names already accepted (difflib ratio >=
+    constants.DEDUPE_THRESHOLD); duplicates are dropped from the JSON and
+    their flat image files deleted, so scrapers and the WordPress publisher
+    never see them. First occurrence wins (JSON insertion order). Toggled by
+    constants.DEDUPE_PRODUCTS. Returns the number of duplicates removed.
+    Never raises."""
+    if not DEDUPE_PRODUCTS:
+        return 0
+    analysis_file = job_dir / brand_slug / category / "image_analysis.json"
+    if not analysis_file.exists():
+        return 0
+    try:
+        analysis = json.loads(analysis_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"⚠️  Could not read {analysis_file}: {e}")
+        return 0
+
+    images_dir = job_dir / brand_slug / category / "images"
+    seen_norms: list[str] = []
+    duplicates: list[str] = []
+    for filename, entry in analysis.items():
+        name = entry.get("product_name")
+        if not name:
+            continue  # no KIE name — never treated as a duplicate
+        norm = normalize_name(name)
+        if is_duplicate_name(norm, seen_norms, DEDUPE_THRESHOLD):
+            duplicates.append(filename)
+            print(f"  ⏭️  Duplicate: {filename} — '{name}'")
+        else:
+            seen_norms.append(norm)
+
+    if not duplicates:
+        print(f"✅ {category}: no duplicate products found.")
+        return 0
+
+    for filename in duplicates:
+        del analysis[filename]
+        img_path = images_dir / filename
+        try:
+            if img_path.exists():
+                img_path.unlink()
+        except Exception as e:
+            print(f"  ⚠️  Could not remove duplicate image {filename}: {e}")
+
+    try:
+        analysis_file.write_text(json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        print(f"  ⚠️  Could not write deduped analysis back to {analysis_file}: {e}")
+    print(f"⏭️  Removed {len(duplicates)} duplicate product(s) from {analysis_file.name}.")
+    return len(duplicates)
+
+
+def enrich_images_with_scrapes(job_dir: Path, brand: str, brand_slug: str, category: str) -> int:
+    """Scraper analysis: for every image in this category whose KIE analysis
+    found a product name, look that product up on the brand's own site
+    (scrapers/) and attach {name, price, size, description, product_url} to
+    its analysis entry in <category>/image_analysis.json — publish_brand()
+    renders those on the WordPress page. Toggled by
+    constants.SCRAPER_ANALYSIS. Returns the number of images enriched. Never
+    raises — a failed lookup just leaves that image without scraped data."""
+    if not SCRAPER_ANALYSIS:
+        return 0
+    searcher = scrapers.get_searcher(brand)
+    if not searcher:
+        print(f"ℹ️  No product scraper for {brand} — skipping scraper analysis.")
+        return 0
+
+    analysis_file = job_dir / brand_slug / category / "image_analysis.json"
+    if not analysis_file.exists():
+        return 0
+    try:
+        analysis = json.loads(analysis_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"⚠️  Could not read {analysis_file}: {e}")
+        return 0
+
+    to_scrape = {k: v for k, v in analysis.items() if v.get("product_name")}
+    if not to_scrape:
+        print(f"ℹ️  {category}: no images with KIE product names — nothing to scrape.")
+        return 0
+
+    print("\n" + "=" * 70)
+    print(f"SCRAPER ANALYSIS — looking up {len(to_scrape)} product(s) on {brand} ({category})")
+    print("=" * 70)
+
+    enriched = 0
+    pending = [(fn, entry) for fn, entry in analysis.items()
+               if entry.get("product_name") and not entry.get("scraped")]
+
+    # Parallel keyword scraping: SCRAPER_WORKERS threads search concurrently.
+    # Each thread gets its OWN searcher (fresh curl_cffi session — sessions
+    # are not thread-safe), warmed once per thread. Results are merged back
+    # into the analysis dict in the main thread, keyed by filename, so the
+    # JSON write below stays identical to the sequential version.
+    thread_local = threading.local()
+
+    def _thread_searcher():
+        s = getattr(thread_local, "searcher", None)
+        if s is None:
+            s = scrapers.get_searcher(brand)
+            try:
+                s.warmup()
+            except Exception as e:
+                print(f"  ⚠️  Scraper warmup failed: {e}")
+            thread_local.searcher = s
+        return s
+
+    def _scrape_one(item):
+        filename, entry = item
+        thread_searcher = _thread_searcher()
+        try:
+            result = thread_searcher.search(entry.get("product_name"))
+        except Exception as e:
+            print(f"  ⚠️  Scrape failed for {filename} ({entry.get('product_name')!r}): {e}")
+            result = None
+        time.sleep(0.5)  # be polite to the retailer's site
+        return item, result
+
+    if pending:
+        print(f"  🧵 Scraping {len(pending)} keyword(s) with {SCRAPER_WORKERS} parallel thread(s)")
+    with ThreadPoolExecutor(max_workers=SCRAPER_WORKERS) as executor:
+        for (filename, entry), result in executor.map(_scrape_one, pending):
+            if result:
+                entry["scraped"] = {
+                    "name": result.get("name"),
+                    "price": result.get("price"),
+                    "size": result.get("size"),
+                    "description": result.get("description"),
+                    "product_url": result.get("product_url"),
+                }
+                enriched += 1
+                print(f"  🔗 {filename} → {result.get('name')!r} — {result.get('price') or 'price not listed'}")
+            else:
+                print(f"  🚫 {filename} — no product match for {entry.get('product_name')!r}")
+
+    try:
+        analysis_file.write_text(json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        print(f"  ⚠️  Could not write enriched analysis back to {analysis_file}: {e}")
+    print(f"✅ Scraper analysis: enriched {enriched}/{len(to_scrape)} {category} image(s).")
+    return enriched
+
+
+def apply_price_badges(job_dir: Path, brand_slug: str, category: str) -> int:
+    """Stamp scraped prices onto this category's images (used when AI
+    generation is off — the badge goes on the original). Marks entries
+    price_overlaid so images never get double-badged on re-runs. Returns the
+    number badged."""
+    if not PRICE_ON_IMAGE:
+        return 0
+    analysis_file = job_dir / brand_slug / category / "image_analysis.json"
+    if not analysis_file.exists():
+        return 0
+    try:
+        analysis = json.loads(analysis_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"⚠️  Could not read {analysis_file}: {e}")
+        return 0
+
+    images_dir = job_dir / brand_slug / category / "images"
+    badged = 0
+    for filename, entry in analysis.items():
+        if entry.get("price_overlaid"):
+            continue
+        price = (entry.get("scraped") or {}).get("price")
+        img_path = images_dir / filename
+        if price and img_path.exists() and overlay_price_on_image(img_path, price):
+            entry["price_overlaid"] = True
+            badged += 1
+            print(f"  🏷️  Price {price} stamped onto {filename}")
+
+    if badged:
+        try:
+            analysis_file.write_text(json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception as e:
+            print(f"  ⚠️  Could not write price-overlay flags back to {analysis_file}: {e}")
+    return badged
+
+
+def render_image_prompt(template: str, brand: str, entry: dict) -> str:
+    """Prepare the workspace image prompt for sending: strip comment lines
+    (lines starting with '#'), then substitute {store} and {product_name}
+    from the KIE analysis + scraped data. Unknown placeholders are left
+    untouched."""
+    product_name = entry.get("product_name") or (entry.get("scraped") or {}).get("name") or ""
+    body = "\n".join(
+        line for line in template.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    body = body.replace("{store}", brand).replace("{product_name}", product_name)
+    return body.strip()
+
+
+def generate_ai_images(job_dir: Path, brand: str, brand_slug: str, category: str,
+                       image_prompt: str | None = None) -> int:
+    """AI image generation stage — the last step before publishing. For every
+    image in this category, create a new AI-generated version via KIE
+    (generate.py, nano-banana-pro) and use it for publishing instead of the
+    original: the upload copy and the AI result are both kept under
+    constants.AI_IMAGE_MAX_BYTES (quality-first compression,
+    image_pipeline.compress_under_limit — no unnecessary quality loss). The
+    price badge is applied AFTER generation — onto the AI image when one was
+    produced, otherwise onto the original. Prompt: the workspace image
+    prompt (--image-prompt) — without one, generation is skipped. Toggled by
+    constants.GENERATE_AI_IMAGES. Returns the number of images regenerated.
+    Never raises per image — a failure just publishes the original."""
+    if not GENERATE_AI_IMAGES:
+        apply_price_badges(job_dir, brand_slug, category)
+        return 0
+
+    analysis_file = job_dir / brand_slug / category / "image_analysis.json"
+    if not analysis_file.exists():
+        return 0
+    try:
+        analysis = json.loads(analysis_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"⚠️  Could not read {analysis_file}: {e}")
+        return 0
+
+    images_dir = job_dir / brand_slug / category / "images"
+    entries = {fn: e for fn, e in analysis.items() if (images_dir / fn).exists()}
+    if not entries:
+        return 0
+
+    prompt_template = (image_prompt or "").strip()
+    if not prompt_template:
+        print("⚠️  No AI image prompt configured for this workspace — skipping AI generation.")
+        apply_price_badges(job_dir, brand_slug, category)
+        return 0
+    scratch_dir = job_dir / f"_ai_{brand_slug}"
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+
+    print("\n" + "=" * 70)
+    print(f"AI IMAGE GENERATION — regenerating {len(entries)} {category} image(s) via KIE nano-banana-pro")
+    print("=" * 70)
+
+    generated = 0
+
+    # Parallel AI generation: AI_IMAGE_WORKERS threads each run the full
+    # upload→createTask→poll→download pipeline for a different image, so the
+    # long poll waits (15-20s per task) overlap instead of stacking up. All
+    # KIE calls are paced through the shared thread-safe rate limiter, and
+    # each worker touches only its own files + its own analysis entry, so
+    # there is no shared mutable state. The JSON write below happens once,
+    # after all workers finish.
+    def _generate_one(item):
+        filename, entry = item
+        img_path = images_dir / filename
+        price = (entry.get("scraped") or {}).get("price")
+        ok = False
+
+        if not entry.get("ai_image"):  # already generated in a previous run — don't regenerate
+            try:
+                public_url = generate.upload_image(str(img_path))
+                kie_vision.rate_limiter.acquire()
+                prompt = render_image_prompt(prompt_template, brand, entry)
+                task_id = generate.create_task(public_url, prompt=prompt)
+                result_url = generate.poll_task(task_id)
+                result_path = scratch_dir / f"result_{filename}"
+                generate.download_image(result_url, str(result_path))
+                compress_under_limit(str(result_path), AI_IMAGE_MAX_BYTES)
+                if AI_IMAGE_COMPARE:
+                    # Comparison sheet replaces the published image: AI result
+                    # on top, original below, both labeled — easy to compare.
+                    if make_comparison_image(result_path, img_path, result_path):
+                        print(f"  🔀 {filename} — comparison sheet (AI top / original below)")
+                shutil.move(str(result_path), str(img_path))
+                entry["ai_image"] = True
+                ok = True
+                print(f"  🎨 {filename} — AI image generated")
+            except Exception as e:
+                print(f"  ⚠️  AI generation failed for {filename}: {e} — publishing the original")
+
+        # Price badge goes on the AI image when one exists, else the original.
+        if price and PRICE_ON_IMAGE and not entry.get("price_overlaid"):
+            if overlay_price_on_image(img_path, price):
+                entry["price_overlaid"] = True
+                print(f"  🏷️  Price {price} stamped onto {filename}")
+        return ok
+
+    with ThreadPoolExecutor(max_workers=AI_IMAGE_WORKERS) as executor:
+        for ok in executor.map(_generate_one, entries.items()):
+            if ok:
+                generated += 1
+
+    shutil.rmtree(scratch_dir, ignore_errors=True)
+    try:
+        analysis_file.write_text(json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        print(f"  ⚠️  Could not write AI-image flags back to {analysis_file}: {e}")
+    print(f"✅ AI image generation: {generated}/{len(entries)} {category} image(s) regenerated.")
+    return generated
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Facebook product-image analysis pipeline")
+    parser = argparse.ArgumentParser(description="Facebook product-image analysis + publishing pipeline")
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--sources-file", required=True, help="JSON file: [{\"url\":..., \"type\": \"page|group|post|null\"}]")
     parser.add_argument("--start-date", default=None, help="YYYY-MM-DD (page/group sources only)")
     parser.add_argument("--end-date", default=None, help="YYYY-MM-DD (page/group sources only, default: today)")
     parser.add_argument("--min-comments", type=int, default=0)
     parser.add_argument("--skip-post-ids-file", default=None, help="JSON list of post_ids to skip (cross-run dedup)")
-    parser.add_argument("--brands-file", default=None, help="JSON list of workspace brand configs — only these brands are scraped/published")
+    parser.add_argument("--brand", default=None,
+                        help="The workspace's single canonical retailer brand — only posts "
+                             "whose detected brand matches are scraped/published")
     parser.add_argument("--posts-per-source", type=int, default=POSTS_PER_SOURCE_DEFAULT)
     parser.add_argument("--brand-post-limit", type=int, default=0,
-                        help="Testing cap: max posts accepted PER BRAND across all sources "
-                             "(0 = unlimited). E.g. 1 with ALDI+Walmart configured keeps at "
-                             "most 1 ALDI post and 1 Walmart post.")
+                        help="Testing cap: max posts accepted across all sources "
+                             "(0 = unlimited).")
     parser.add_argument("--output-root", default="output")
-    parser.add_argument("--phase", default="discover", choices=["discover", "full"],
-                        help="discover (default): scrape + brand-filter only, write per-brand "
-                             "posts.json manifests, no image work. full: legacy single-pipeline "
-                             "mode (discovery + processing in one run).")
+    parser.add_argument("--food-publish-target", default="retailshout", choices=["retailshout", "aos"])
+    parser.add_argument("--food-page-id", default=None,
+                        help="Food WordPress page ID — food publishing is skipped when absent")
+    parser.add_argument("--non-food-publish-target", default="retailshout", choices=["retailshout", "aos"])
+    parser.add_argument("--non-food-page-id", default=None,
+                        help="Non-food WordPress page ID — non-food publishing is skipped when absent")
+    parser.add_argument("--image-prompt", default=None,
+                        help="Workspace AI image prompt — without one, AI generation is skipped")
+    parser.add_argument("--page-title", default=None,
+                        help="WordPress page title template ({brand}/{date_range} placeholders, workspace config)")
+    parser.add_argument("--week-start", default=None,
+                        help="Week start day for the page title's date window (e.g. friday for ALDI, tuesday for Publix)")
+    parser.add_argument("--categories", default="food,non_food",
+                        help="Comma-separated categories to keep + publish: food, non_food, or both")
     args = parser.parse_args()
 
-    sources = json.loads(Path(args.sources_file).read_text(encoding="utf-8"))
+    categories = parse_categories_arg(args.categories)
+    brand_slug = brand_mapping.brand_slug(args.brand) if args.brand else None
 
-    brand_configs = load_brand_config(args.brands_file)
-    brand_filter = make_brand_filter(brand_configs)
-    if brand_configs:
-        print(f"Brand filter: only {', '.join(sorted(b['brand'] for b in brand_configs))} — all other brands' posts are skipped.")
+    brand_filter = make_brand_filter(args.brand)
+    if args.brand:
+        print(f"Brand filter: only {args.brand} posts pass — every other brand's posts are skipped.")
     else:
-        print("Brand filter: no brands configured — every single-detected brand passes.")
+        print("Brand filter: no brand configured — every single-detected brand passes.")
     effective_filter = make_per_brand_limiter(brand_filter, args.brand_post_limit)
     if args.brand_post_limit and args.brand_post_limit > 0:
-        print(f"Per-brand limit: max {args.brand_post_limit} post(s) per brand (testing mode).")
+        print(f"Post limit: max {args.brand_post_limit} post(s) (testing mode).")
 
     skip_ids = set()
     if args.skip_post_ids_file and Path(args.skip_post_ids_file).exists():
@@ -639,12 +999,21 @@ def main():
     if not cookies:
         print("⚠️  No Facebook session cookie configured (Settings page) — public-only scraping, may be unreliable.")
 
+    sources = json.loads(Path(args.sources_file).read_text(encoding="utf-8"))
+
     job_dir = Path(args.output_root) / args.job_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
+    def _publish_dest(category: str, page_id: str | None, target: str) -> str:
+        return f"{category} → {target} (page {page_id})" if page_id else f"{category} → not configured (skipped)"
+
     print("=" * 70)
     print(f"Facebook pipeline — job {args.job_id}")
-    print(f"Sources: {len(sources)}  |  Date window: {start_dt or '(open)'} → {end_dt}  |  Min comments: {args.min_comments}")
+    print(f"Brand: {args.brand or '(any)'}  |  Categories: {', '.join(categories)}")
+    print(f"Publishing: {_publish_dest('Food', args.food_page_id, args.food_publish_target)}  |  "
+          f"{_publish_dest('Non-Food', args.non_food_page_id, args.non_food_publish_target)}")
+    print(f"Sources: {len(sources)}  |  Date window: {start_dt or '(open)'} → {end_dt}  |  "
+          f"Min comments: {args.min_comments}")
     print("=" * 70)
 
     # ── Phase 1: discovery — scrape every post link from every source first,
@@ -652,7 +1021,7 @@ def main():
     # starts. This surfaces "how much is there to process" up front instead
     # of interleaving it with the (much slower) processing phase.
     print("\n" + "=" * 70)
-    print("PHASE 1/2 — Discovering posts from all sources")
+    print("PHASE 1/3 — Discovering posts from all sources")
     print("=" * 70)
 
     discovered_post_sources: list[tuple[str, str]] = []       # (url, post_id)
@@ -693,110 +1062,12 @@ def main():
     print(f"\n✅ Discovery complete — found {total_found} post(s) across "
           f"{len(discovered_post_sources) + len(discovered_page_group_sources)}/{len(sources)} source(s).")
 
-    # ── Discover mode (default): stop here. Group every surviving post by
-    # its brand and write a per-brand manifest (posts.json) holding each
-    # post's text, discovered image URLs, and last_media_id — everything the
-    # per-brand sub-workflow (run_brand_job.py) needs to page in extra
-    # images, download, process, analyze, organize, and publish. No image
-    # bytes are touched in this phase.
-    if args.phase == "discover":
-        print("\n" + "=" * 70)
-        print("PHASE 2/2 — Grouping filtered posts by brand (no image work)")
-        print("=" * 70)
-
-        brand_posts: dict[str, dict] = {}   # brand_slug -> {"brand": ..., "posts": [...]}
-        processed_ids: list[str] = []
-
-        for url, post_id in discovered_post_sources:
-            if post_id in skip_ids:
-                print(f"  ⏭️  Already processed in a previous run: {post_id}")
-                continue
-            print(f"\nInspecting post: {url}")
-            try:
-                meta = fetch_post_meta_from_html(url, cookies)
-                text_brand = brand_mapping.detect_single_brand(meta.get("text"))
-                print(f"  🏷️  Detected brand from post text: {text_brand or '(none / ambiguous)'}")
-                if not text_brand:
-                    print(f"  🗑️  Skipping post {post_id} — no single retailer brand detected in post text")
-                    continue
-                if not brand_filter(meta.get("text")) or not effective_filter(meta.get("text")):
-                    print(f"  🗑️  Skipping post {post_id} — brand '{text_brand}' is not configured in this workspace")
-                    continue
-                # The comments API response is the only source of media_id
-                # (the image-album handle) for a bare post URL — grab it now
-                # so the brand sub-workflow doesn't need another text fetch.
-                media_id = None
-                try:
-                    _, post_info = fb_client.fetch_comments_for_post(post_id, cookies=cookies,
-                                                                     max_pages=1, with_replies=False)
-                    media_id = (post_info or {}).get("media_id")
-                except Exception as e:
-                    print(f"  ⚠️  Could not resolve media_id for {post_id}: {e}")
-                slug = brand_mapping.brand_slug(text_brand)
-                brand_posts.setdefault(slug, {"brand": text_brand, "posts": []})
-                brand_posts[slug]["posts"].append({
-                    "post_id": post_id, "src_type": "post", "source_url": url,
-                    "text_key": "text", "name_key": "page_name",
-                    "post": {
-                        "post_id": post_id, "permalink": url,
-                        "text": meta.get("text"), "page_name": meta.get("page_name"),
-                        "published_at": meta.get("published_at"), "media_id": media_id,
-                    },
-                })
-                processed_ids.append(post_id)
-            except Exception as e:
-                print(f"❌ Post inspection failed entirely: {url}: {e}")
-
-        for discovered in discovered_page_group_sources:
-            text_key = discovered["text_key"]
-            name_key = discovered["name_key"]
-            print(f"\nGrouping {len(discovered['posts'])} post(s) from: {discovered['url']}")
-            for post in discovered["posts"]:
-                post_id = post.get("post_id")
-                if not post_id or post_id in skip_ids:
-                    continue
-                text_brand = brand_mapping.detect_single_brand(post.get(text_key))
-                print(f"  🏷️  Post {post_id} brand: {text_brand or '(none / ambiguous)'} — text: {(post.get(text_key) or '')[:150]!r}")
-                if not text_brand:
-                    continue
-                slug = brand_mapping.brand_slug(text_brand)
-                brand_posts.setdefault(slug, {"brand": text_brand, "posts": []})
-                brand_posts[slug]["posts"].append({
-                    "post_id": post_id, "src_type": discovered["src_type"],
-                    "source_url": discovered["url"],
-                    "text_key": text_key, "name_key": name_key,
-                    "post": post,
-                })
-                processed_ids.append(post_id)
-            shutil.rmtree(discovered["scratch_root"], ignore_errors=True)
-
-        for slug, bundle in brand_posts.items():
-            brand_dir = job_dir / slug
-            brand_dir.mkdir(parents=True, exist_ok=True)
-            (brand_dir / "posts.json").write_text(
-                json.dumps(bundle, indent=2, ensure_ascii=False), encoding="utf-8"
-            )
-            print(f"  📄 {bundle['brand']}: {len(bundle['posts'])} post(s) → {slug}/posts.json")
-
-        (job_dir / "manifest.json").write_text(
-            json.dumps({
-                "phase": "discover",
-                "processed_post_ids": processed_ids, "post_count": len(processed_ids),
-                "brand_post_counts": {slug: len(b["posts"]) for slug, b in brand_posts.items()},
-            }, indent=2),
-            encoding="utf-8",
-        )
-
-        print(f"\n✅ Discovery + filtering done — {len(processed_ids)} post(s) across "
-              f"{len(brand_posts)} brand(s). Per-brand sub-workflows handle images/publishing next.")
-        print("[STAGE] done")
-        return
-
-    # ── Legacy full-pipeline mode (--phase full): discovery + processing in
-    # a single run. Kept for manual runs; job_runner always uses the
-    # two-phase flow (discover here, then run_brand_job.py per brand).
+    # ── Phase 2: processing — for everything Phase 1 found: extra-image
+    # discovery via last_media_id → download → process → KIE analysis →
+    # image-count + category filters → organize into
+    # <brand-slug>/<category>/post_<id>/.
     print("\n" + "=" * 70)
-    print("PHASE 2/2 — Processing discovered posts")
+    print("PHASE 2/3 — Processing discovered posts")
     print("=" * 70)
 
     all_processed_ids: list[str] = []
@@ -805,7 +1076,8 @@ def main():
     for url, post_id in discovered_post_sources:
         print(f"\nProcessing post: {url}")
         result = _with_source_retries(
-            url, lambda: process_post_url(job_dir, post_id, url, cookies, skip_ids, brand_filter))
+            url, lambda: process_post_url(job_dir, post_id, url, cookies, skip_ids,
+                                          effective_filter, categories))
         if result:
             processed_id, mapping = result
             if processed_id:
@@ -816,7 +1088,8 @@ def main():
         print(f"\nProcessing source: {discovered['url']}  ({len(discovered['posts'])} post(s))")
         result = _with_source_retries(
             discovered["url"],
-            lambda d=discovered: process_page_or_group_posts(job_dir, d, cookies, skip_ids, brand_filter))
+            lambda d=discovered: process_page_or_group_posts(job_dir, d, cookies, skip_ids,
+                                                             brand_filter, categories))
         if result:
             ids, mapping = result
             all_processed_ids.extend(ids)
@@ -837,14 +1110,77 @@ def main():
     )
     (job_dir / "manifest.json").write_text(
         json.dumps({
+            "phase": "pipeline",
+            "brand": args.brand, "brand_slug": brand_slug, "categories": categories,
             "processed_post_ids": all_processed_ids, "post_count": len(all_processed_ids),
             "kept_post_ids": kept_post_ids, "kept_count": len(kept_post_ids),
         }, indent=2),
         encoding="utf-8",
     )
 
-    print(f"\n✅ Done. Processed {len(all_processed_ids)} post(s) across {len(sources)} source(s) — "
-          f"{len(kept_post_ids)} kept after brand/image filtering.")
+    print(f"\n✅ Processing done. Processed {len(all_processed_ids)} post(s) across {len(sources)} source(s) — "
+          f"{len(kept_post_ids)} kept after brand/image/category filtering.")
+
+    # ── Phase 3: publish prep + publish — dedupe → scraper analysis → AI
+    # images per selected category, then each category publishes to its OWN
+    # website + WordPress page (a category without a page ID is skipped).
+    if not kept_post_ids:
+        print("\nℹ️  No posts kept — skipping publish prep and publishing.")
+        print("[STAGE] done")
+        return
+
+    print("\n" + "=" * 70)
+    print(f"PHASE 3/3 — Publish prep + publishing ({', '.join(categories)})")
+    print("=" * 70)
+
+    for category in categories:
+        print(f"\n── {category} ──")
+        print("[STAGE] deduplicating")
+        dedupe_category_images(job_dir, brand_slug, category)
+        print("[STAGE] scraping_products")
+        enrich_images_with_scrapes(job_dir, args.brand, brand_slug, category)
+        print("[STAGE] generating_ai_images")
+        generate_ai_images(job_dir, args.brand, brand_slug, category, image_prompt=args.image_prompt)
+
+    # Publish plan: each selected category with a configured page publishes
+    # separately — food to its site/page, non-food to its own.
+    publish_plan = []
+    if "food" in categories and args.food_page_id:
+        publish_plan.append(("food", args.food_page_id, args.food_publish_target))
+    if "non_food" in categories and args.non_food_page_id:
+        publish_plan.append(("non_food", args.non_food_page_id, args.non_food_publish_target))
+
+    published_any = False
+    for category, page_id, target in publish_plan:
+        images_dir = job_dir / brand_slug / category / "images"
+        image_count = sum(1 for p in images_dir.iterdir() if p.is_file()) if images_dir.exists() else 0
+        if not image_count:
+            print(f"\nℹ️  No {category} images kept — skipping {category} publish.")
+            continue
+        print("\n" + "=" * 70)
+        print(f"PUBLISHING {category} images to {target} (page {page_id})")
+        print("=" * 70)
+        print("[STAGE] publishing")
+        ok, message = publish_brand(
+            parent_job_id=args.job_id,
+            brand=args.brand,
+            brand_slug=brand_slug,
+            category=category,
+            page_id=page_id,
+            publish_target=target,
+            output_root=args.output_root,
+            status="publish",
+            page_title=args.page_title,
+            week_start_day=args.week_start,
+        )
+        if not ok:
+            print(f"❌ Publish failed: {message}")
+            sys.exit(1)
+        published_any = True
+
+    if not publish_plan:
+        print("\nℹ️  No WordPress page ID configured for the selected categories — skipping publish step.")
+
     print("[STAGE] done")
 
 

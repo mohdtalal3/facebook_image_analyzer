@@ -107,10 +107,10 @@
 
           <div class="mb-4">
             <label class="form-label">
-              <i class="bi bi-funnel me-1"></i>Posts per Brand <span class="badge bg-warning-subtle text-warning-emphasis" style="font-size:10px;">testing</span>
+              <i class="bi bi-funnel me-1"></i>Max Posts <span class="badge bg-warning-subtle text-warning-emphasis" style="font-size:10px;">testing</span>
             </label>
             <input type="number" name="brand_post_limit" class="form-control" min="0" value="0" placeholder="0">
-            <div class="form-text">Testing limit: max posts kept PER BRAND across all sources. E.g. 1 with ALDI + Walmart picks at most 1 ALDI post and 1 Walmart post. 0 = no limit.</div>
+            <div class="form-text">Testing limit: max posts kept across all sources. 0 = no limit.</div>
           </div>
 
           <button type="submit" class="btn btn-primary w-100 py-2" id="runBtn">
@@ -140,18 +140,35 @@
             </td>
           </tr>
           <tr>
-            <td class="ps-4 text-muted" style="padding:10px 0 10px 16px;">Brands</td>
+            <td class="ps-4 text-muted" style="padding:10px 0 10px 16px;">Brand</td>
             <td class="pe-4" style="padding:10px 16px 10px 0;">
-              {% if workspace.brands %}
-                {% for b in workspace.brands %}
-                  <div style="font-size:12px;margin-bottom:3px;">
-                    <span class="badge" style="background:#dbeafe;color:#1e40af;font-weight:600;font-size:10.5px;">{{ b.brand }}</span>
-                    <span class="text-muted" style="font-size:11px;">{{ b.publish_target }}{% if b.page_id %} · page {{ b.page_id }}{% else %} · no page ID{% endif %}</span>
-                  </div>
-                {% endfor %}
+              {% if workspace.brand %}
+                <span class="badge" style="background:#dbeafe;color:#1e40af;font-weight:600;font-size:10.5px;">{{ workspace.brand }}</span>
               {% else %}
                 <span class="badge" style="background:#f1f5f9;color:#64748b;font-weight:600;font-size:11px;">None configured</span>
               {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <td class="ps-4 text-muted" style="padding:10px 0 10px 16px;">Categories</td>
+            <td class="pe-4" style="padding:10px 16px 10px 0;">
+              {% set ws_cats = workspace.categories or ['food', 'non_food'] %}
+              {% for c in ws_cats %}
+                <span class="badge" style="background:#dcfce7;color:#15803d;font-weight:600;font-size:10.5px;">{{ c.replace('_', '-') | capitalize }}</span>
+              {% endfor %}
+            </td>
+          </tr>
+          <tr>
+            <td class="ps-4 text-muted" style="padding:10px 0 10px 16px;">Publishing</td>
+            <td class="pe-4" style="padding:10px 16px 10px 0;">
+              <div style="font-size:12px;margin-bottom:3px;">
+                <span style="font-weight:600;color:#334155;">Food</span>
+                <span class="text-muted" style="font-size:11px;">→ {{ workspace.food_publish_target or 'retailshout' }}{% if workspace.food_page_id %} · page {{ workspace.food_page_id }}{% else %} · not set (skipped){% endif %}</span>
+              </div>
+              <div style="font-size:12px;">
+                <span style="font-weight:600;color:#334155;">Non-Food</span>
+                <span class="text-muted" style="font-size:11px;">→ {{ workspace.non_food_publish_target or 'retailshout' }}{% if workspace.non_food_page_id %} · page {{ workspace.non_food_page_id }}{% else %} · not set (skipped){% endif %}</span>
+              </div>
             </td>
           </tr>
           <tr>
@@ -214,7 +231,17 @@
              onmouseout="this.style.background='transparent'">
             <div>
               <div style="font-size:12px;font-weight:600;color:#0f172a;">
-                {% if job.job_kind in ('brand', 'publish') %}
+                {% if job.brand %}
+                  <span class="badge" style="background:#dbeafe;color:#1e40af;font-weight:600;font-size:10px;">
+                    <i class="bi bi-shop me-1"></i>{{ job.brand }}
+                  </span>
+                  {% if job.sources and job.sources | length %}
+                    {{ job.sources | length }} source{% if job.sources|length != 1 %}s{% endif %}
+                    {% if job.post_count is not none %} → {{ job.post_count }} post{% if job.post_count != 1 %}s{% endif %}{% endif %}
+                  {% elif job.job_kind in ('brand', 'publish') %}
+                    <span style="font-size:11px;color:#94a3b8;">→ {{ job.publish_target }}{% if job.page_id %} · page {{ job.page_id }}{% else %} · no page ID{% endif %}</span>
+                  {% endif %}
+                {% elif job.job_kind in ('brand', 'publish') %}
                   <span class="badge" style="background:#fef3c7;color:#92400e;font-weight:600;font-size:10px;">
                     <i class="bi bi-cloud-upload me-1"></i>Brand: {{ job.brand }}
                   </span>

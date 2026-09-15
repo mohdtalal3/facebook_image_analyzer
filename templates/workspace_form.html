@@ -32,9 +32,115 @@
           <div class="mb-4">
             <label class="form-label">Workspace Name <span class="text-danger">*</span></label>
             <input type="text" name="name" class="form-control" required
-                   placeholder="e.g. Retail Deals Watch, Local Marketplace"
+                   placeholder="e.g. ALDI Finds, Kroger Deals"
                    value="{{ workspace.name if workspace else '' }}">
             <div class="form-text">This will appear in the sidebar and on job records.</div>
+          </div>
+
+          <div class="mb-4">
+            <label class="form-label">
+              <i class="bi bi-shop me-1"></i>Brand <span class="text-danger">*</span>
+            </label>
+            <select name="brand" class="form-select" required>
+              <option value="">Select brand…</option>
+              {% for b in all_brands %}
+              <option value="{{ b }}" {% if workspace and workspace.brand == b %}selected{% endif %}>{{ b }}</option>
+              {% endfor %}
+            </select>
+            <div class="form-text">
+              Each workspace tracks exactly one retailer brand. Only posts matching this brand are scraped,
+              and its output is organized under this brand's folder.
+            </div>
+          </div>
+
+          <div class="mb-4">
+            <label class="form-label">
+              <i class="bi bi-basket me-1"></i>Product Categories
+            </label>
+            <div class="d-flex gap-4 p-3 rounded" style="background:#f8fafc;">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="cat_food" id="catFood" value="on"
+                       {% if not workspace or 'food' in (workspace.categories or []) %}checked{% endif %}>
+                <label class="form-check-label" for="catFood" style="font-weight:600;font-size:14px;">Food</label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="cat_non_food" id="catNonFood" value="on"
+                       {% if not workspace or 'non_food' in (workspace.categories or []) %}checked{% endif %}>
+                <label class="form-check-label" for="catNonFood" style="font-weight:600;font-size:14px;">Non-Food</label>
+              </div>
+            </div>
+            <div class="form-text">
+              Which product categories to keep and publish — select one or both. Each category can publish
+              to its own website and page below.
+            </div>
+          </div>
+
+          <div class="mb-4" id="foodPublishBlock">
+            <label class="form-label">
+              <i class="bi bi-egg-fried me-1" style="color:#d97706"></i>Food — Publish Destination
+            </label>
+            <div class="row g-3 p-3 rounded" style="background:#fffbeb;">
+              <div class="col-md-5">
+                <label class="form-label" style="font-size:12px;">Website</label>
+                <select name="food_publish_target" class="form-select form-select-sm">
+                  <option value="retailshout" {% if not workspace or workspace.food_publish_target != 'aos' %}selected{% endif %}>Retail Shout (retailshout.com)</option>
+                  <option value="aos" {% if workspace and workspace.food_publish_target == 'aos' %}selected{% endif %}>AOS (aisleofshame.com)</option>
+                </select>
+              </div>
+              <div class="col-md-7">
+                <label class="form-label" style="font-size:12px;">WordPress Page ID</label>
+                <input type="text" name="food_page_id" class="form-control form-control-sm" placeholder="e.g. 12345"
+                       value="{{ workspace.food_page_id if workspace and workspace.food_page_id is defined else '' }}">
+                <div class="form-text">Leave empty to skip food publishing.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="mb-4" id="nonFoodPublishBlock">
+            <label class="form-label">
+              <i class="bi bi-house-gear me-1" style="color:#0ea5e9"></i>Non-Food — Publish Destination
+            </label>
+            <div class="row g-3 p-3 rounded" style="background:#f0f9ff;">
+              <div class="col-md-5">
+                <label class="form-label" style="font-size:12px;">Website</label>
+                <select name="non_food_publish_target" class="form-select form-select-sm">
+                  <option value="retailshout" {% if not workspace or workspace.non_food_publish_target != 'aos' %}selected{% endif %}>Retail Shout (retailshout.com)</option>
+                  <option value="aos" {% if workspace and workspace.non_food_publish_target == 'aos' %}selected{% endif %}>AOS (aisleofshame.com)</option>
+                </select>
+              </div>
+              <div class="col-md-7">
+                <label class="form-label" style="font-size:12px;">WordPress Page ID</label>
+                <input type="text" name="non_food_page_id" class="form-control form-control-sm" placeholder="e.g. 67890"
+                       value="{{ workspace.non_food_page_id if workspace and workspace.non_food_page_id is defined else '' }}">
+                <div class="form-text">Leave empty to skip non-food publishing.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="mb-4">
+            <label class="form-label">
+              <i class="bi bi-magic me-1"></i>Image Prompt
+            </label>
+            <textarea name="image_prompt" class="form-control" rows="4"
+                      placeholder="AI image-generation prompt. {store} and {product_name} are substituted per image. Leave empty to skip AI generation.">{{ workspace.image_prompt if workspace and workspace.image_prompt is defined else '' }}</textarea>
+            <div class="form-text">Lines starting with # are ignored. Applied to every kept image before publishing.</div>
+          </div>
+
+          <div class="row g-3 mb-4">
+            <div class="col-md-8">
+              <label class="form-label">Page Title <span class="text-muted">(optional — {brand} and {date_range} are substituted)</span></label>
+              <input type="text" name="page_title" class="form-control"
+                     placeholder="Just Spotted at {brand}: This Week’s Food Finds Everyone’s Grabbing ({date_range})"
+                     value="{{ workspace.page_title if workspace and workspace.page_title is defined else '' }}">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Week Starts <span class="text-muted">(for {date_range})</span></label>
+              <select name="week_start" class="form-select">
+                {% for d in ['friday','monday','tuesday','wednesday','thursday','saturday','sunday'] %}
+                <option value="{{ d }}" {% if (workspace.week_start if workspace and workspace.week_start is defined else 'friday') == d %}selected{% endif %}>{{ d | capitalize }}</option>
+                {% endfor %}
+              </select>
+            </div>
           </div>
 
           <div class="mb-4">
@@ -48,21 +154,6 @@
               Only posts with at least this many comments are processed. Use 0 to process all posts.
               This is the default pre-filled on the Run Bot form and the schedule below — both can override it.
             </div>
-          </div>
-
-          <div class="mb-4">
-            <label class="form-label">
-              <i class="bi bi-tags me-1"></i>Brands
-            </label>
-            <div class="form-text mb-2">
-              Choose which retailer brands this workspace tracks. Only posts matching these brands are scraped,
-              and each brand gets its own WordPress page ID, publish target, and image prompt.
-            </div>
-            <div id="brandRows"></div>
-            <button type="button" class="btn btn-sm btn-outline-primary mt-2" id="addBrandBtn">
-              <i class="bi bi-plus-lg me-1"></i>Add Brand
-            </button>
-            <input type="hidden" name="brands_json" id="brandsJson">
           </div>
 
           <div class="d-flex gap-3 pt-2">
@@ -89,91 +180,16 @@
 
 {% block scripts %}
 <script>
-  const ALL_BRANDS = {{ all_brands | tojson }};
-  const EXISTING_BRANDS = {{ (workspace.brands if workspace and workspace.brands else []) | tojson }};
-
-  const brandRows = document.getElementById('brandRows');
-  const brandsJson = document.getElementById('brandsJson');
-
-  function addBrandRow(data) {
-    data = data || {};
-    const row = document.createElement('div');
-    row.className = 'brand-row border rounded-3 p-3 mb-3';
-    row.style.background = '#f8fafc';
-    row.innerHTML = `
-      <div class="d-flex justify-content-between align-items-center mb-2">
-        <span style="font-weight:600;font-size:13px;color:#334155;">
-          <i class="bi bi-shop me-1" style="color:#3b82f6"></i>Brand
-        </span>
-        <button type="button" class="btn btn-sm btn-outline-danger py-0 px-2 remove-brand-btn" title="Remove brand">
-          <i class="bi bi-trash"></i>
-        </button>
-      </div>
-      <div class="row g-2">
-        <div class="col-md-4">
-          <label class="form-label" style="font-size:12px;">Brand <span class="text-danger">*</span></label>
-          <select class="form-select form-select-sm brand-select">
-            <option value="">Select brand…</option>
-            ${ALL_BRANDS.map(b => `<option value="${b}" ${data.brand === b ? 'selected' : ''}>${b}</option>`).join('')}
-          </select>
-        </div>
-        <div class="col-md-3">
-          <label class="form-label" style="font-size:12px;">WordPress Page ID</label>
-          <input type="text" class="form-control form-control-sm brand-page-id" placeholder="e.g. 12345"
-                 value="${data.page_id || ''}">
-        </div>
-        <div class="col-md-5">
-          <label class="form-label" style="font-size:12px;">Publish Target</label>
-          <select class="form-select form-select-sm brand-target">
-            <option value="retailshout" ${data.publish_target !== 'aos' ? 'selected' : ''}>Retail Shout (retailshout.com)</option>
-            <option value="aos" ${data.publish_target === 'aos' ? 'selected' : ''}>AOS (aisleofshame.com)</option>
-          </select>
-        </div>
-        <div class="col-12">
-          <label class="form-label" style="font-size:12px;">Image Prompt <span class="text-muted">(saved for later use)</span></label>
-          <textarea class="form-control form-control-sm brand-prompt" rows="2"
-                    placeholder="Per-brand image prompt (optional for now)">${data.image_prompt || ''}</textarea>
-        </div>
-        <div class="col-md-8">
-          <label class="form-label" style="font-size:12px;">Page Title <span class="text-muted">(optional — {brand} and {date_range} are substituted)</span></label>
-          <input type="text" class="form-control form-control-sm brand-page-title"
-                 placeholder="Just Spotted at {brand}: This Week’s Food Finds Everyone’s Grabbing ({date_range})"
-                 value="${data.page_title || ''}">
-        </div>
-        <div class="col-md-4">
-          <label class="form-label" style="font-size:12px;">Week Starts <span class="text-muted">(for {date_range})</span></label>
-          <select class="form-select form-select-sm brand-week-start">
-            ${['friday','monday','tuesday','wednesday','thursday','saturday','sunday'].map(d =>
-              `<option value="${d}" ${(data.week_start || 'friday') === d ? 'selected' : ''}>${d.charAt(0).toUpperCase() + d.slice(1)}</option>`).join('')}
-          </select>
-        </div>
-      </div>`;
-
-    row.querySelector('.remove-brand-btn').addEventListener('click', () => row.remove());
-    brandRows.appendChild(row);
+  // Dim each category's publish block while that category is unchecked —
+  // the fields stay enabled so saved values survive toggling.
+  function syncCategoryBlocks() {
+    const food = document.getElementById('catFood').checked;
+    const nonFood = document.getElementById('catNonFood').checked;
+    document.getElementById('foodPublishBlock').style.opacity = food ? '1' : '.45';
+    document.getElementById('nonFoodPublishBlock').style.opacity = nonFood ? '1' : '.45';
   }
-
-  function syncBrandsJson() {
-    const rows = [...brandRows.querySelectorAll('.brand-row')];
-    const brands = rows.map(row => ({
-      brand: row.querySelector('.brand-select').value,
-      page_id: row.querySelector('.brand-page-id').value.trim(),
-      publish_target: row.querySelector('.brand-target').value,
-      image_prompt: row.querySelector('.brand-prompt').value.trim(),
-      page_title: row.querySelector('.brand-page-title').value.trim(),
-      week_start: row.querySelector('.brand-week-start').value,
-    })).filter(b => b.brand);
-    brandsJson.value = JSON.stringify(brands);
-  }
-
-  document.getElementById('addBrandBtn').addEventListener('click', () => addBrandRow());
-  brandRows.addEventListener('change', syncBrandsJson);
-  brandRows.addEventListener('input', syncBrandsJson);
-
-  EXISTING_BRANDS.forEach(b => addBrandRow(b));
-  syncBrandsJson();
-
-  // Re-sync right before submit so the payload always matches the DOM
-  document.querySelector('form').addEventListener('submit', syncBrandsJson);
+  document.getElementById('catFood').addEventListener('change', syncCategoryBlocks);
+  document.getElementById('catNonFood').addEventListener('change', syncCategoryBlocks);
+  syncCategoryBlocks();
 </script>
 {% endblock %}

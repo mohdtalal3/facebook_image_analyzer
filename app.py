@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Flask frontend for the Facebook Product Image Analyzer"""
 
-import json
 import uuid
 from datetime import datetime
 
@@ -42,39 +41,37 @@ def _urls_from_field(field_name: str) -> list[str]:
     return [u.strip() for u in raw.splitlines() if u.strip()]
 
 
-def _brands_from_form() -> list[dict]:
-    """Parse the workspace's brand configurations out of the JSON payload
-    the workspace form builds from its dynamic brand rows. Each entry:
-    {"brand": canonical name, "page_id": str, "publish_target":
-    "retailshout"|"aos", "image_prompt": str, "page_title": str,
-    "week_start": day name}. Unknown brand names are dropped; everything
-    else is saved as-is (page_id/image_prompt may be empty — publishing
-    just skips brands without a page_id)."""
-    raw = request.form.get("brands_json", "").strip()
-    if not raw:
-        return []
-    try:
-        entries = json.loads(raw)
-    except Exception:
-        return []
-    brands = []
-    for entry in entries if isinstance(entries, list) else []:
-        brand = (entry.get("brand") or "").strip()
-        if brand not in brand_mapping.BRAND_KEYWORDS:
-            continue
-        target = entry.get("publish_target")
-        week_start = (entry.get("week_start") or "").strip().lower()
-        brands.append({
-            "brand": brand,
-            "page_id": str(entry.get("page_id") or "").strip(),
-            "publish_target": target if target in ("retailshout", "aos") else "retailshout",
-            "image_prompt": (entry.get("image_prompt") or "").strip(),
-            "page_title": (entry.get("page_title") or "").strip(),
-            "week_start": week_start if week_start in (
-                "monday", "tuesday", "wednesday", "thursday", "friday",
-                "saturday", "sunday") else "friday",
-        })
-    return brands
+def _brand_config_from_form() -> dict:
+    """Parse the workspace's single-brand configuration from the workspace
+    form. Each workspace tracks exactly ONE brand, and each category
+    publishes to its own website + WordPress page (used only when that
+    category is selected in `categories`). Returns the config dict; `brand`
+    may be empty (the caller validates), everything else is normalized."""
+    brand = (request.form.get("brand") or "").strip()
+    week_start = (request.form.get("week_start") or "").strip().lower()
+
+    def _target(field: str) -> str:
+        value = request.form.get(field)
+        return value if value in ("retailshout", "aos") else "retailshout"
+
+    categories = []
+    if request.form.get("cat_food") == "on":
+        categories.append("food")
+    if request.form.get("cat_non_food") == "on":
+        categories.append("non_food")
+    return {
+        "brand": brand if brand in brand_mapping.BRAND_KEYWORDS else "",
+        "food_publish_target": _target("food_publish_target"),
+        "food_page_id": (request.form.get("food_page_id") or "").strip(),
+        "non_food_publish_target": _target("non_food_publish_target"),
+        "non_food_page_id": (request.form.get("non_food_page_id") or "").strip(),
+        "image_prompt": (request.form.get("image_prompt") or "").strip(),
+        "page_title": (request.form.get("page_title") or "").strip(),
+        "week_start": week_start if week_start in (
+            "monday", "tuesday", "wednesday", "thursday", "friday",
+            "saturday", "sunday") else "friday",
+        "categories": categories or ["food", "non_food"],
+    }
 
 
 def _explicit_sources_from_form() -> list[dict]:
@@ -111,8 +108,14 @@ def index():
 def workspace_new():
     if request.method == "POST":
         name = request.form.get("name", "").strip()
+        brand_config = _brand_config_from_form()
         if not name:
-            return render_template("workspace_form.html", workspace=None, error="Workspace name is required.")
+            return render_template("workspace_form.html", workspace=None, error="Workspace name is required.",
+                                   all_brands=sorted(brand_mapping.BRAND_KEYWORDS.keys()))
+        if not brand_config["brand"]:
+            return render_template("workspace_form.html", workspace=None,
+                                   error="Please select the brand this workspace tracks.",
+                                   all_brands=sorted(brand_mapping.BRAND_KEYWORDS.keys()))
 
         min_comments_raw = request.form.get("min_comments", "").strip()
         ws = {
@@ -121,7 +124,7 @@ def workspace_new():
             "min_comments": int(min_comments_raw) if min_comments_raw.isdigit() else 0,
             "created_at": datetime.now().isoformat(),
             "fb_sources": [],
-            "brands": _brands_from_form(),
+            **brand_config,
             "schedule": {"enabled": False, "day": "saturday", "time": "08:00", "timezone": "UTC", "start_date": None, "min_comments": 0},
             "schedule_state": {},
         }
@@ -131,7 +134,6 @@ def workspace_new():
         return redirect(url_for("workspace_detail", workspace_id=ws["id"]))
 
     return render_template("workspace_form.html", workspace=None, error=None,
-                           brands_json=None,
                            all_brands=sorted(brand_mapping.BRAND_KEYWORDS.keys()))
 
 
@@ -160,12 +162,21 @@ def workspace_edit(workspace_id):
 
     if request.method == "POST":
         name = request.form.get("name", "").strip()
+        brand_config = _brand_config_from_form()
         if not name:
-            return render_template("workspace_form.html", workspace=ws, error="Workspace name is required.")
+            return render_template("workspace_form.html", workspace=ws, error="Workspace name is required.",
+                                   all_brands=sorted(brand_mapping.BRAND_KEYWORDS.keys()))
+        if not brand_config["brand"]:
+            return render_template("workspace_form.html", workspace=ws,
+                                   error="Please select the brand this workspace tracks.",
+                                   all_brands=sorted(brand_mapping.BRAND_KEYWORDS.keys()))
         ws["name"] = name
         min_comments_raw = request.form.get("min_comments", "").strip()
         ws["min_comments"] = int(min_comments_raw) if min_comments_raw.isdigit() else 0
-        ws["brands"] = _brands_from_form()
+        ws.update(brand_config)
+        # drop legacy field names replaced by the per-category publish config
+        for legacy_key in ("brands", "page_id", "publish_target"):
+            ws.pop(legacy_key, None)
         save_workspaces(workspaces)
         return redirect(url_for("workspace_detail", workspace_id=workspace_id))
 

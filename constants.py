@@ -19,7 +19,7 @@ IMAGE_WORKERS = 5                   # concurrent per-post image processing/analy
 IMAGE_DOWNLOAD_WORKERS = 5          # concurrent per-post image *download* threads (fb_client.download_pending_post_images)
 POSTS_PER_SOURCE_DEFAULT = 500      # default --posts-per-source limit for page/group fetch
 
-# ── run_brand_job.py scraper analysis ──
+# ── run_facebook.py publish-prep: scraper analysis ──
 SCRAPER_ANALYSIS = True             # after KIE analysis, look each FOOD image's product up on the
                                 # brand's own site (scrapers/, e.g. AldiSearcher) and attach
                                 # name/price/description — shown on the WordPress page. When
@@ -30,7 +30,7 @@ SCRAPER_WORKERS = 5                 # parallel keyword-search threads in enrich_
                                 # each thread gets its own searcher session (curl_cffi sessions
                                 # are not thread-safe), so N keywords scrape concurrently
 
-# ── run_brand_job.py product dedup (before scraper analysis + publishing) ──
+# ── run_facebook.py publish-prep: product dedup (before scraper analysis + publishing) ──
 DEDUPE_PRODUCTS = True              # remove duplicate products from food/image_analysis.json after
                                 # analysis — different posts/pages often show the same product;
                                 # duplicates (and their images) are dropped so scrapers and the
@@ -38,13 +38,13 @@ DEDUPE_PRODUCTS = True              # remove duplicate products from food/image_
 DEDUPE_THRESHOLD = 0.9             # normalized-name similarity ratio (difflib) above which two
                                 # product names count as duplicates
 
-# ── run_brand_job.py AI image generation (final stage, after dedup + scraper analysis) ──
+# ── run_facebook.py publish-prep: AI image generation (final stage, after dedup + scraper analysis) ──
 GENERATE_AI_IMAGES = True           # send each food image to KIE (nano-banana-pro via generate.py)
                                 # to create a new AI-generated image; the AI image replaces the
                                 # original for publishing. When False, the original image is
                                 # published (and gets the price badge, if PRICE_ON_IMAGE).
-                                # The prompt comes from the workspace's per-brand image_prompt
-                                # config (--image-prompt); brands without one skip generation.
+                                # The prompt comes from the workspace image_prompt
+                                # config (--image-prompt); workspaces without one skip generation.
 AI_IMAGE_MAX_BYTES = 512000      # images are compressed under this size before upload to KIE
                                 # and the AI result is compressed under it before publishing
 AI_IMAGE_WORKERS = 5                # parallel AI image-generation threads (upload→createTask→poll→download

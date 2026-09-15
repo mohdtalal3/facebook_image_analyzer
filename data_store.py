@@ -40,9 +40,51 @@ _lock = threading.Lock()
 
 # ── WORKSPACES ──────────────────────────────────────────────────────────────
 
+VALID_CATEGORIES = ("food", "non_food")
+PUBLISH_TARGETS = ("retailshout", "aos")
+
+
+def normalize_workspace(ws: dict) -> dict:
+    """Normalize a workspace record to the current one-brand-per-workspace
+    shape with per-category publishing — food and non-food each get their own
+    publish target + WordPress page ID, used only when that category is
+    selected. Legacy shapes are folded in, in memory (the next save through
+    the workspace form persists the new shape):
+      - brands[] lists (the old multi-brand config): the first entry becomes
+        the workspace's single brand; its page_id/publish_target become the
+        FOOD destination.
+      - the intermediate single page_id/publish_target fields: kept as the
+        FOOD destination.
+    Also defaults the food/non-food category selection to both when absent.
+    Applied to every workspace read via load_workspaces(), and available to
+    callers that receive a workspace dict from elsewhere (e.g. a hand-edited
+    file)."""
+    if isinstance(ws.get("brands"), list) and ws["brands"]:
+        first = ws["brands"][0] or {}
+        ws.setdefault("brand", first.get("brand") or "")
+        ws.setdefault("food_page_id", first.get("page_id") or "")
+        ws.setdefault("food_publish_target", first.get("publish_target") or "retailshout")
+        ws.setdefault("image_prompt", first.get("image_prompt") or "")
+        ws.setdefault("page_title", first.get("page_title") or "")
+        ws.setdefault("week_start", first.get("week_start") or "friday")
+    if "food_page_id" not in ws:
+        ws["food_page_id"] = ws.get("page_id") or ""
+    if "food_publish_target" not in ws:
+        ws["food_publish_target"] = ws.get("publish_target") or "retailshout"
+    if ws.get("food_publish_target") not in PUBLISH_TARGETS:
+        ws["food_publish_target"] = "retailshout"
+    if ws.get("non_food_publish_target") not in PUBLISH_TARGETS:
+        ws["non_food_publish_target"] = "retailshout"
+    ws.setdefault("non_food_page_id", "")
+    if not isinstance(ws.get("categories"), list) or not ws["categories"]:
+        ws["categories"] = list(VALID_CATEGORIES)
+    return ws
+
+
 def load_workspaces() -> list:
     with _lock:
-        return json.loads(WORKSPACES_FILE.read_text(encoding="utf-8"))
+        data = json.loads(WORKSPACES_FILE.read_text(encoding="utf-8"))
+    return [normalize_workspace(ws) for ws in data]
 
 
 def save_workspaces(data: list):

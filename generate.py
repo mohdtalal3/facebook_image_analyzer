@@ -211,7 +211,7 @@ def make_comparison_image(ai_path, original_path, out_path) -> bool:
         return False
 
 def _render_prompt(template: str, brand: str, product_name: str = "") -> str:
-    """Same convention as run_brand_job.render_image_prompt (small helpers are
+    """Same convention as run_facebook.render_image_prompt (small helpers are
     duplicated across modules in this codebase): strip '#' comment lines,
     then substitute {store} and {product_name}."""
     body = "\n".join(
@@ -222,16 +222,15 @@ def _render_prompt(template: str, brand: str, product_name: str = "") -> str:
 
 
 def find_brand_prompt(brand: str, workspace: str | None = None) -> str | None:
-    """Look up a brand's image_prompt in data/workspaces.json (the same
-    per-brand config the brand jobs use). `workspace` optionally narrows the
-    search by workspace id or name; otherwise the first workspace that
-    configures the brand with a non-empty prompt wins."""
+    """Look up a brand's image_prompt in data/workspaces.json (each workspace
+    configures exactly one brand). `workspace` optionally narrows the search
+    by workspace id or name; otherwise the first workspace configured for
+    that brand with a non-empty prompt wins."""
     for ws in load_workspaces():
         if workspace and workspace not in (ws.get("id"), ws.get("name")):
             continue
-        for b in ws.get("brands") or []:
-            if b.get("brand") == brand and (b.get("image_prompt") or "").strip():
-                return b["image_prompt"].strip()
+        if ws.get("brand") == brand and (ws.get("image_prompt") or "").strip():
+            return ws["image_prompt"].strip()
     return None
 
 
@@ -249,7 +248,7 @@ def generate_image(image_path: str, brand: str, product_name: str = "",
     if not prompt_template:
         raise SystemExit(
             f"❌ No image_prompt configured for brand '{brand}' in data/workspaces.json "
-            f"(set it on the workspace form's brand row)")
+            f"(set Image Prompt on the workspace form)")
     prompt = _render_prompt(prompt_template, brand, product_name)
 
     out_path = Path(output_path) if output_path else img_path.with_name(f"{img_path.stem}_ai{img_path.suffix or '.jpg'}")
@@ -308,7 +307,7 @@ def main():
     if not prompt_template:
         hint = f" in workspace '{args.workspace}'" if args.workspace else ""
         print(f"❌ No image_prompt configured for brand '{args.brand}'{hint} "
-              f"in data/workspaces.json — set it on the workspace form's brand row.")
+              f"in data/workspaces.json — set Image Prompt on the workspace form.")
         sys.exit(1)
 
     generate_image(args.image, args.brand, product_name=args.product_name, output_path=args.out)
