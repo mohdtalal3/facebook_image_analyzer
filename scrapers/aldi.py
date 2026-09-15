@@ -121,20 +121,30 @@ class AldiSearcher:
 
         data = r.json()
 
+        # with open("aldi_first_response.json", "w", encoding="utf-8") as f:
+        #     json.dump(data, f, indent=2, ensure_ascii=False)
+        # print("✓ Raw first response saved to aldi_first_response.json")
+
         if data.get("errors"):
             raise Exception(data["errors"])
 
         product = None
 
-        for placement in data["data"]["searchResultsPlacements"]["placements"]:
+        placements = data["data"]["searchResultsPlacements"]["placements"]
 
+        def grid_items(placement):
             content = placement.get("content", {})
-
             if content.get("__typename") != "SearchContentManagementSearchItemGrid":
-                continue
+                return None
+            return content.get("items", []) or []
+
+        # 1) Main results first
+        for placement in placements:
+            items = grid_items(placement)
 
             section_type = (
-                content.get("viewSection", {})
+                placement.get("content", {})
+                .get("viewSection", {})
                 .get("trackingProperties", {})
                 .get("section_details", {})
                 .get("section_type")
@@ -143,11 +153,37 @@ class AldiSearcher:
             if section_type == "related_results":
                 continue
 
-            items = content.get("items", [])
-
             if items:
                 product = items[0]
                 break
+
+        # 2) Fallback: related results, only if a query word matches the name
+        if not product:
+            query_words = set(query.lower().split())
+            min_matches = min(2, len(query_words))
+
+            for placement in placements:
+                items = grid_items(placement)
+
+                section_type = (
+                    placement.get("content", {})
+                    .get("viewSection", {})
+                    .get("trackingProperties", {})
+                    .get("section_details", {})
+                    .get("section_type")
+                )
+
+                if section_type != "related_results":
+                    continue
+
+                if not items:
+                    continue
+
+                item = items[0]
+                name = (item.get("name") or "").lower()
+                if len(query_words & set(name.split())) >= min_matches:
+                    product = item
+                    break
 
         if not product:
             return None
@@ -249,7 +285,7 @@ if __name__ == "__main__":
 
     aldi.warmup()
 
-    product = aldi.search("Sourdough Pumpkinseed Cranberry Loaf")
+    product = aldi.search("Embossed Microfiber Sheet Set")
 
     if product:
 
