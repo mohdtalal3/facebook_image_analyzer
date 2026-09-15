@@ -273,9 +273,10 @@ def build_analysis_and_images(post_dir: Path, original_paths: list[str], post_id
 def finalize_post(staging_root: Path, post_id: str, post_url, page_url, page_name, post_text,
                    published_at, comment_count, comments, orig_image_paths) -> dict:
     """Writes the post's data under staging_root/post_<id> — a scratch
-    location, not the final output path. organize_or_discard() below moves
-    it into output/<job_id>/<brand>/<category>/post_<id>/ (or deletes it)
-    once the image-count/category filters have been applied."""
+    location, not the final output path. organize_or_discard() below splits
+    it by each image's KIE category into
+    output/<job_id>/<brand>/<category>/post_<id>/ (or deletes it) once the
+    image-count/category filters have been applied."""
     post_dir = staging_root / f"post_{post_id}"
     canonical_orig_dir = post_dir / "images" / "original"
     canonical_orig_dir.mkdir(parents=True, exist_ok=True)
@@ -339,76 +340,131 @@ def post_qualifies(mapping: dict) -> tuple[bool, str]:
     return True, "ok"
 
 
-def category_from_mapping(mapping: dict) -> str:
-    """One category per post: unanimous non-null image category wins,
-    otherwise uncategorized (mixed or undetermined)."""
-    categories = {entry.get("category") for entry in mapping.values() if entry.get("category")}
-    if len(categories) == 1:
-        return next(iter(categories))
-    return "uncategorized"
-
-
 def organize_or_discard(job_dir: Path, staging_root: Path, post_id: str, text_brand: str,
-                        mapping: dict, allowed_categories: list[str]) -> bool:
-    """Applies the image-requirement + category-selection filters and either
-    moves the staged post into
-    output/<job_id>/<brand>/<category>/post/post_<id>/ or discards it.
+                        mapping: dict, allowed_categories: list[str]) -> dict:
+    """Applies the image-requirement filter, then splits the staged post's
+    images BY THEIR OWN KIE category (a real haul post mixes food and
+    non-food products, so the category is decided per image, not per post)
+    and organizes each group into
+    output/<job_id>/<brand>/<category>/post/post_<id>/.
 
-    A post whose unanimous image category isn't selected in the workspace
-    (food / non_food — "uncategorized" always stays on disk for debugging,
-    though it is never published) is discarded right here.
+    Each destination post_<id>/ folder holds only the images of its category
+    (post.json's image list, originals, processed copies, and the per-post
+    analysis are all filtered to match), so every category folder stays
+    self-consistent. Images whose category isn't selected in the workspace
+    (food / non_food) are discarded; "uncategorized" (null) images always
+    stay on disk for debugging, though they are never published.
 
-    Also mirrors the kept post's images into a flat <brand>/<category>/images/
-    folder and merges its mapping into a category-wide
-    <brand>/<category>/image_analysis.json — so a user can see every image +
-    its analysis for a whole brand/category at a glance, without opening each
-    post_<id>/ folder one by one. Every individual post_<id>/ folder is kept
-    grouped together under a single <brand>/<category>/post/ folder, for
-    drilling into one specific post while debugging.
+    Also mirrors each group's images into a flat <brand>/<category>/images/
+    folder (filenames prefixed `post_<id>_` to avoid collisions across
+    posts) and merges the group's mapping into a category-wide
+    <brand>/<category>/image_analysis.json — the file every later stage
+    (dedupe, scraper analysis, AI images, publishing) reads.
 
-    Returns True if the post was kept."""
+    Returns the mapping entries that were written (empty dict if the post
+    was discarded entirely)."""
     staged_dir = staging_root / f"post_{post_id}"
     keep, reason = post_qualifies(mapping)
     if not keep:
         print(f"  🗑️  Skipping post {post_id} — {reason}")
         shutil.rmtree(staged_dir, ignore_errors=True)
-        return False
-
-    category = category_from_mapping(mapping)
-    if category != "uncategorized" and category not in allowed_categories:
-        print(f"  🗑️  Discarding post {post_id} — category '{category}' is not selected in this workspace")
-        shutil.rmtree(staged_dir, ignore_errors=True)
-        return False
+        return {}
 
     brand_slug = brand_mapping.brand_slug(text_brand)
-    category_dir = job_dir / brand_slug / category
-    dest_dir = category_dir / "post" / f"post_{post_id}"
-    dest_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(staged_dir), str(dest_dir))
 
-    flat_images_dir = category_dir / "images"
-    flat_images_dir.mkdir(exist_ok=True)
-    orig_dir = dest_dir / "images" / "original"
-    if orig_dir.exists():
-        for img in orig_dir.iterdir():
-            if img.is_file():
+    # Group the post's images by their own KIE category (null → uncategorized).
+    groups: dict[str, dict] = {}
+    for filename, entry in mapping.items():
+        category = entry.get("category") or "uncategorized"
+        groups.setdefault(category, {})[filename] = entry
+
+    # Keep groups whose category is selected; uncategorized always stays on
+    # disk (debug-only, never published).
+    writable = {category: entries for category, entries in groups.items()
+                if category == "uncategorized" or category in allowed_categories}
+    skipped = [c for c in groups if c not in writable]
+    if skipped:
+        skipped_count = sum(len(groups[c]) for c in skipped)
+        print(f"  🚫 Post {post_id}: {skipped_count} image(s) in unselected categories ({', '.join(sorted(skipped))}) discarded")
+    if not writable:
+        print(f"  🗑️  Discarding post {post_id} — none of its image categories are selected in this workspace")
+        shutil.rmtree(staged_dir, ignore_errors=True)
+        return {}
+
+    written: dict = {}
+    try:
+        post_json = json.loads((staged_dir / "post.json").read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"  ⚠️  Could not read staged post.json for {post_id}: {e}")
+        post_json = {}
+
+    for category, entries in sorted(writable.items()):
+        category_dir = job_dir / brand_slug / category
+        dest_dir = category_dir / "post" / f"post_{post_id}"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        # Filter the staged post.json down to this category's images.
+        category_post_json = json.loads(json.dumps(post_json))  # deep copy
+        keep_orig_names, keep_proc_names = set(), set()
+        selected_images = []
+        for img in category_post_json.get("images") or []:
+            img_category = (img.get("analysis") or {}).get("category") or "uncategorized"
+            if img_category != category:
+                continue
+            selected_images.append(img)
+            if img.get("original_filename"):
+                keep_orig_names.add(img["original_filename"])
+            if img.get("processed_filename"):
+                keep_proc_names.add(img["processed_filename"])
+        category_post_json["images"] = selected_images
+        (dest_dir / "post.json").write_text(
+            json.dumps(category_post_json, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        # Copy this category's originals + processed images into the post dir.
+        for sub, names in (("original", keep_orig_names), ("processed", keep_proc_names)):
+            src_dir = staged_dir / "images" / sub
+            if not src_dir.exists() or not names:
+                continue
+            dst_dir = dest_dir / "images" / sub
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            for f in src_dir.iterdir():
+                if f.is_file() and f.name in names:
+                    try:
+                        shutil.copy2(f, dst_dir / f.name)
+                    except Exception as e:
+                        print(f"  ⚠️  Could not copy {f.name} into {brand_slug}/{category}/post/post_{post_id}/: {e}")
+
+        analysis_dir = dest_dir / "analysis"
+        analysis_dir.mkdir(exist_ok=True)
+        (analysis_dir / "image_analysis.json").write_text(
+            json.dumps(entries, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        # Flat copy for quick browsing + the combined category-wide mapping.
+        flat_images_dir = category_dir / "images"
+        flat_images_dir.mkdir(exist_ok=True)
+        for name in sorted(keep_orig_names):
+            src = dest_dir / "images" / "original" / name
+            if src.exists():
                 try:
-                    shutil.copy2(img, flat_images_dir / f"post_{post_id}_{img.name}")
+                    shutil.copy2(src, flat_images_dir / f"post_{post_id}_{name}")
                 except Exception as e:
-                    print(f"  ⚠️  Could not copy {img.name} into {brand_slug}/{category}/images/: {e}")
+                    print(f"  ⚠️  Could not copy {name} into {brand_slug}/{category}/images/: {e}")
 
-    category_analysis_file = category_dir / "image_analysis.json"
-    combined = {}
-    if category_analysis_file.exists():
-        try:
-            combined = json.loads(category_analysis_file.read_text(encoding="utf-8"))
-        except Exception:
-            combined = {}
-    combined.update(mapping)
-    category_analysis_file.write_text(json.dumps(combined, indent=2, ensure_ascii=False), encoding="utf-8")
+        category_analysis_file = category_dir / "image_analysis.json"
+        combined = {}
+        if category_analysis_file.exists():
+            try:
+                combined = json.loads(category_analysis_file.read_text(encoding="utf-8"))
+            except Exception:
+                combined = {}
+        combined.update(entries)
+        category_analysis_file.write_text(json.dumps(combined, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    print(f"  📁 Kept post {post_id} → {brand_slug}/{category}/")
-    return True
+        print(f"  📁 Kept {len(entries)} image(s) of post {post_id} → {brand_slug}/{category}/")
+        written.update(entries)
+
+    shutil.rmtree(staged_dir, ignore_errors=True)
+    return written
 
 
 def discover_post_url(url: str, cookies: dict) -> str | None:
@@ -482,8 +538,8 @@ def process_post_url(job_dir: Path, post_id: str, url: str, cookies: dict, skip_
         published_at=meta.get("published_at"), comment_count=len(comments),
         comments=comments, orig_image_paths=image_paths,
     )
-    kept = organize_or_discard(job_dir, staging_root, post_id, text_brand, mapping, allowed_categories)
-    return post_id, (mapping if kept else {})
+    written = organize_or_discard(job_dir, staging_root, post_id, text_brand, mapping, allowed_categories)
+    return post_id, written
 
 
 def discover_page_or_group_posts(job_dir: Path, url: str, src_type: str, cookies: dict,
@@ -616,9 +672,8 @@ def process_page_or_group_posts(job_dir: Path, discovered: dict, cookies: dict,
             comment_count=post.get("comment_count", len(comments)),
             comments=comments, orig_image_paths=orig_images,
         )
-        kept = organize_or_discard(job_dir, staging_root, post_id, text_brand, mapping, allowed_categories)
-        if kept:
-            all_mapping.update(mapping)
+        written = organize_or_discard(job_dir, staging_root, post_id, text_brand, mapping, allowed_categories)
+        all_mapping.update(written)
         processed_ids.append(post_id)
 
     shutil.rmtree(scratch_root, ignore_errors=True)
