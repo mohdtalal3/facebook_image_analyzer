@@ -43,7 +43,8 @@ def extract_user_id_from_url(url, cookies=None):
         print(f"  No ID in URL, fetching page: {url}")
         response = requests.get(url, headers=headers, cookies=cookies, proxies=PROXIES, timeout=20)
         html = response.text
-        
+        with open("page.html", "w", encoding="utf-8") as f:
+            f.write(html)
         # Try multiple patterns to find user ID in HTML
         patterns = [
             r'fb://profile/(\d+)',           # BEST signal
