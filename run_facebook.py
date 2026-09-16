@@ -1144,6 +1144,27 @@ def main():
     print(f"\n✅ Discovery complete — found {total_found} post(s) across "
           f"{len(discovered_post_sources) + len(discovered_page_group_sources)}/{len(sources)} source(s).")
 
+    # Full list of discovered post links (log + discovered_posts.txt in the
+    # job dir) so the run can be verified at a glance.
+    link_lines = []
+    for url, _post_id in discovered_post_sources:
+        link_lines.append(url)
+    for discovered in discovered_page_group_sources:
+        if not discovered["posts"]:
+            continue
+        link_lines.append(f"{discovered['url']}  ({len(discovered['posts'])} post(s))")
+        for post in discovered["posts"]:
+            link = post.get("permalink") or f"https://www.facebook.com/{post.get('post_id')}"
+            link_lines.append(f"    • {link}")
+    if link_lines:
+        print("\n📋 Discovered post links:")
+        for line in link_lines:
+            print(f"  {line}")
+        try:
+            (job_dir / "discovered_posts.txt").write_text("\n".join(link_lines) + "\n", encoding="utf-8")
+        except Exception as e:
+            print(f"⚠️  Could not write discovered_posts.txt: {e}")
+
     # ── Phase 2: processing — for everything Phase 1 found: extra-image
     # discovery via last_media_id → download → process → KIE analysis →
     # image-count + category filters → organize into
