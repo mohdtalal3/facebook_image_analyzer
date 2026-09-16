@@ -6,6 +6,7 @@ import requests
 import re
 from html import unescape
 from dotenv import load_dotenv
+from curl_cffi import requests as curl_requests
 
 # Load environment variables
 load_dotenv()
@@ -15,6 +16,21 @@ from comment_scraper import fetch_comments, fetch_replies, fb_json, GRAPHQL, PRO
 from post_scraper import fetch_posts as fetch_page_posts, extract_media as extract_page_media, parse_fb_response as parse_page_response
 from group_post_scraper_v2 import fetch_posts as fetch_group_posts
 from single_post_image import fetch_all_images
+
+
+def _fetch_html(url, cookies=None, timeout=20):
+    """Fetch a page's HTML through curl_cffi with Chrome impersonation —
+    plain `requests` gets login-walled / served stripped-down HTML far more
+    often, which is why ID resolution intermittently failed."""
+    response = curl_requests.get(
+        url,
+        cookies=cookies,
+        proxies=PROXIES,
+        impersonate="chrome107",
+        timeout=timeout,
+        allow_redirects=True,
+    )
+    return response
 
 
 def extract_user_id_from_url(url, cookies=None):
@@ -34,14 +50,9 @@ def extract_user_id_from_url(url, cookies=None):
             return user_id
     
     # If no ID in URL, fetch the page and search in HTML
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept-Language": "en-US,en;q=0.9"
-    }
-    
     try:
         print(f"  No ID in URL, fetching page: {url}")
-        response = requests.get(url, headers=headers, cookies=cookies, proxies=PROXIES, timeout=20)
+        response = _fetch_html(url, cookies=cookies)
         html = response.text
         with open("page.html", "w", encoding="utf-8") as f:
             f.write(html)
@@ -85,14 +96,9 @@ def extract_group_id_from_url(url, cookies=None):
             return group_id
     
     # If no ID in URL, fetch the page and search in HTML
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept-Language": "en-US,en;q=0.9"
-    }
-    
     try:
         print(f"  No ID in URL, fetching group page: {url}")
-        response = requests.get(url, headers=headers, cookies=cookies, proxies=PROXIES, timeout=20)
+        response = _fetch_html(url, cookies=cookies)
         html = response.text
         
         # Try multiple patterns to find group ID in HTML
@@ -135,14 +141,9 @@ def extract_post_id_from_url(url, cookies=None):
             return post_id
     
     # If no direct pattern match, fetch the page and extract from HTML
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept-Language": "en-US,en;q=0.9"
-    }
-    
     try:
         print(f"  No direct ID in URL, fetching post: {url}")
-        response = requests.get(url, headers=headers, cookies=cookies, proxies=PROXIES, timeout=20)
+        response = _fetch_html(url, cookies=cookies)
         html = response.text
         
         post_id = None
