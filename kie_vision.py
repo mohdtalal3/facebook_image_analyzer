@@ -317,6 +317,7 @@ def analyze_product_image(image_url: str, timeout: int = 120) -> dict:
             json=payload,
             timeout=timeout,
         )
+       # print(response.json())
         if response.status_code != 429:
             break
         wait = KIE_RATE_WINDOW_SECONDS * attempt

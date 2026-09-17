@@ -17,6 +17,8 @@ import os
 from dotenv import load_dotenv
 
 from .aldi import AldiSearcher
+from .samsclub import SamsClubSearcher
+from .target import TargetSearcher
 
 load_dotenv()
 
@@ -24,6 +26,8 @@ load_dotenv()
 # entry here are skipped by the scraper-analysis step.
 SEARCHERS: dict[str, type] = {
     "ALDI": AldiSearcher,
+    "Sam's Club": SamsClubSearcher,
+    "Target": TargetSearcher,
 }
 
 

@@ -820,8 +820,13 @@ def enrich_images_with_scrapes(job_dir: Path, brand: str, brand_slug: str, categ
     def _scrape_one(item):
         filename, entry = item
         thread_searcher = _thread_searcher()
+        query = entry.get("product_name")
+        # Target search works best with the KIE brand prepended to the
+        # product name (e.g. "Drizzilicious Very Berry Bites")
+        if brand == "Target" and entry.get("brand"):
+            query = f"{entry['brand']} {query}"
         try:
-            result = thread_searcher.search(entry.get("product_name"))
+            result = thread_searcher.search(query)
         except Exception as e:
             print(f"  ⚠️  Scrape failed for {filename} ({entry.get('product_name')!r}): {e}")
             result = None
