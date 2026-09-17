@@ -63,6 +63,7 @@ from constants import (
     AI_IMAGE_COMPARE, AI_IMAGE_MAX_BYTES, AI_IMAGE_WORKERS,
     DEDUPE_PRODUCTS, DEDUPE_THRESHOLD, GENERATE_AI_IMAGES,
     PRICE_ON_IMAGE, SCRAPER_ANALYSIS, SCRAPER_WORKERS,
+    SKIP_PRODUCTS_WITHOUT_PRICE,
 )
 
 SOURCE_MAX_ATTEMPTS = 3
@@ -821,9 +822,9 @@ def enrich_images_with_scrapes(job_dir: Path, brand: str, brand_slug: str, categ
         filename, entry = item
         thread_searcher = _thread_searcher()
         query = entry.get("product_name")
-        # Target search works best with the KIE brand prepended to the
-        # product name (e.g. "Drizzilicious Very Berry Bites")
-        if brand == "Target" and entry.get("brand"):
+        # Target and Costco (Instacart) search work best with the KIE brand
+        # prepended to the product name (e.g. "Drizzilicious Very Berry Bites")
+        if brand in ("Target", "Costco") and entry.get("brand"):
             query = f"{entry['brand']} {query}"
         try:
             result = thread_searcher.search(query)
@@ -945,6 +946,17 @@ def generate_ai_images(job_dir: Path, brand: str, brand_slug: str, category: str
 
     images_dir = job_dir / brand_slug / category / "images"
     entries = {fn: e for fn, e in analysis.items() if (images_dir / fn).exists()}
+    if SKIP_PRODUCTS_WITHOUT_PRICE:
+        # Same rule as publish_wordpress.publish_brand: products without a
+        # scraped price are never published, so don't waste KIE credits
+        # generating AI versions of them either.
+        no_price = [fn for fn, e in entries.items()
+                    if not (e.get("scraped") or {}).get("price")]
+        for fn in no_price:
+            entries.pop(fn)
+        if no_price:
+            print(f"⏭️  Skipping AI generation for {len(no_price)} image(s) "
+                  f"without a scraped price (SKIP_PRODUCTS_WITHOUT_PRICE)")
     if not entries:
         return 0
 
