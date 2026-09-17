@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-KIE AI product-image extraction (GPT-5.6 Luna via the /codex/v1/responses endpoint).
+KIE AI product-image extraction (Gemini 3.8 Flash via the OpenAI-compatible
+/gemini-3-8-flash-openai/v1/chat/completions endpoint).
 
 Uploads a local (processed) image to get a public URL — reusing KIE's own
 file-stream-upload endpoint, the same one this project already used for
@@ -23,7 +24,7 @@ load_dotenv()
 
 KIE_API_KEY = os.getenv("KIE_API_KEY", "")
 UPLOAD_URL = "https://kieai.redpandaai.co/api/file-stream-upload"
-RESPONSES_URL = "https://api.kie.ai/codex/v1/responses"
+RESPONSES_URL = "https://api.kie.ai/gemini-3-8-flash-openai/v1/chat/completions"
 
 HEADERS_AUTH = {"Authorization": f"Bearer {KIE_API_KEY}"}
 
@@ -233,16 +234,17 @@ def upload_image(file_path: str, upload_path: str = "fb_product_images", mime: s
 
 
 def _extract_response_text(data: dict) -> str | None:
-    """Best-effort extraction of the model's text reply — the exact response
-    shape of this endpoint isn't publicly documented, so this tries the
-    common 'responses API' shape first, then falls back to a recursive scan."""
+    """Best-effort extraction of the model's text reply — tries the standard
+    OpenAI chat-completions shape first, then falls back to a recursive scan."""
     try:
-        for item in data.get("output", []) or []:
-            if item.get("type") == "message":
-                for c in item.get("content", []) or []:
-                    if c.get("type") in ("output_text", "text") and c.get("text"):
-                        return c["text"]
-    except Exception:
+        content = data["choices"][0]["message"]["content"]
+        if isinstance(content, str) and content:
+            return content
+        if isinstance(content, list):
+            for c in content:
+                if isinstance(c, dict) and c.get("text"):
+                    return c["text"]
+    except (KeyError, IndexError, TypeError):
         pass
 
     if data.get("output_text"):
@@ -282,7 +284,7 @@ def _parse_json_block(text: str) -> dict:
 
 
 def analyze_product_image(image_url: str, timeout: int = 120) -> dict:
-    """Call KIE GPT-5.6 Luna to extract brand/product/category from an image.
+    """Call KIE Gemini 3.8 Flash to extract brand/product/category from an image.
 
     Returns {"brand": ..., "product_name": ..., "category": ...,
     "subcategory": ...}.
@@ -290,18 +292,18 @@ def analyze_product_image(image_url: str, timeout: int = 120) -> dict:
     recording a failed-analysis placeholder instead of losing the post.
     """
     payload = {
-        "model": "gpt-5-6-luna",
+        "model": "gemini-3-8-flash",
         "stream": False,  # default is true (SSE) — we want one JSON response back
-        "input": [
+        "messages": [
             {
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": PRODUCT_EXTRACTION_PROMPT},
-                    {"type": "input_image", "image_url": image_url},
+                    {"type": "text", "text": PRODUCT_EXTRACTION_PROMPT},
+                    {"type": "image_url", "image_url": {"url": image_url}},
                 ],
             }
         ],
-        "reasoning": {"effort": "low"},
+        "reasoning_effort": "low",
     }
 
     # 429-aware retry: KIE rejects (does not queue) requests over the
@@ -328,7 +330,7 @@ def analyze_product_image(image_url: str, timeout: int = 120) -> dict:
     data = response.json()
     usage = data.get("usage") or {}
     credits_consumed = data.get("credits_consumed")
-    print(f"  🔢 Tokens — input: {usage.get('input_tokens')}, output: {usage.get('output_tokens')}, "
+    print(f"  🔢 Tokens — input: {usage.get('prompt_tokens')}, output: {usage.get('completion_tokens')}, "
           f"total: {usage.get('total_tokens')} | credits consumed: {credits_consumed}")
 
     text = _extract_response_text(data)
