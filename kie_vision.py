@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-KIE AI product-image extraction (Gemini 3.8 Flash via the OpenAI-compatible
-/gemini-3-8-flash-openai/v1/chat/completions endpoint).
+KIE AI product-image extraction (Gemini 3.6 Flash via the OpenAI-compatible
+chat-completions endpoint).
 
 Uploads a local (processed) image to get a public URL — reusing KIE's own
 file-stream-upload endpoint, the same one this project already used for
-image generation — then sends that URL to the Luna model for analysis.
+image generation — then sends that URL to Gemini 3.6 Flash for analysis.
 """
 
 import json
@@ -24,7 +24,7 @@ load_dotenv()
 
 KIE_API_KEY = os.getenv("KIE_API_KEY", "")
 UPLOAD_URL = "https://kieai.redpandaai.co/api/file-stream-upload"
-RESPONSES_URL = "https://api.kie.ai/gemini-3-8-flash-openai/v1/chat/completions"
+CHAT_COMPLETIONS_URL = "https://api.kie.ai/gemini-3-6-flash-openai/v1/chat/completions"
 
 HEADERS_AUTH = {"Authorization": f"Bearer {KIE_API_KEY}"}
 
@@ -234,21 +234,18 @@ def upload_image(file_path: str, upload_path: str = "fb_product_images", mime: s
 
 
 def _extract_response_text(data: dict) -> str | None:
-    """Best-effort extraction of the model's text reply — tries the standard
-    OpenAI chat-completions shape first, then falls back to a recursive scan."""
+    """Extract the model's text reply from the OpenAI-compatible
+    chat-completions response, falling back to a recursive scan."""
     try:
         content = data["choices"][0]["message"]["content"]
         if isinstance(content, str) and content:
             return content
         if isinstance(content, list):
             for c in content:
-                if isinstance(c, dict) and c.get("text"):
+                if c.get("type") in ("text", "output_text") and c.get("text"):
                     return c["text"]
     except (KeyError, IndexError, TypeError):
         pass
-
-    if data.get("output_text"):
-        return data["output_text"]
 
     # Fallback: scan every string value for something that looks like our JSON
     def _scan(node):
@@ -284,7 +281,7 @@ def _parse_json_block(text: str) -> dict:
 
 
 def analyze_product_image(image_url: str, timeout: int = 120) -> dict:
-    """Call KIE Gemini 3.8 Flash to extract brand/product/category from an image.
+    """Call KIE Gemini 3.6 Flash to extract brand/product/category from an image.
 
     Returns {"brand": ..., "product_name": ..., "category": ...,
     "subcategory": ...}.
@@ -292,7 +289,7 @@ def analyze_product_image(image_url: str, timeout: int = 120) -> dict:
     recording a failed-analysis placeholder instead of losing the post.
     """
     payload = {
-        "model": "gemini-3-8-flash",
+        "model": "gemini-3-6-flash-openai",
         "stream": False,  # default is true (SSE) — we want one JSON response back
         "messages": [
             {
@@ -314,7 +311,7 @@ def analyze_product_image(image_url: str, timeout: int = 120) -> dict:
     for attempt in range(1, 4):
         rate_limiter.acquire()
         response = requests.post(
-            RESPONSES_URL,
+            CHAT_COMPLETIONS_URL,
             headers={**HEADERS_AUTH, "Content-Type": "application/json"},
             json=payload,
             timeout=timeout,
