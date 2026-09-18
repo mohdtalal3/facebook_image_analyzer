@@ -34,7 +34,9 @@ SEARCHERS: dict[str, type] = {
 
 
 def _proxy_from_env() -> str | None:
-    proxy = os.getenv("STATIC_PROXY", "").strip() or os.getenv("PROXY", "").strip()
+    """Proxy dedicated to the product scrapers (SCRAPPER_PROXY), falling back
+    to the shared Facebook-scraping proxies (STATIC_PROXY, then PROXY)."""
+    proxy = (os.getenv("SCRAPPER_PROXY", "").strip())
     return proxy or None
 
 
