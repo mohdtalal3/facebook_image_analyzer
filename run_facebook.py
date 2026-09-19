@@ -62,6 +62,7 @@ from constants import (
     POSTS_PER_SOURCE_DEFAULT, MIN_IMAGES_FOR_KEEP,
     AI_IMAGE_COMPARE, AI_IMAGE_MAX_BYTES, AI_IMAGE_WORKERS,
     DEDUPE_PRODUCTS, DEDUPE_THRESHOLD, GENERATE_AI_IMAGES,
+    PAGE_SCAN_WORKERS,
     PRICE_ON_IMAGE, SCRAPER_ANALYSIS, SCRAPER_WORKERS,
     SKIP_PRODUCTS_WITHOUT_PRICE,
 )
@@ -137,15 +138,17 @@ def make_per_brand_limiter(brand_filter, limit: int):
     if not limit or limit < 1:
         return brand_filter
     counts: dict[str, int] = {}
+    counts_lock = threading.Lock()  # sources are discovered in parallel now
 
     def limited(text) -> bool:
         brand = brand_mapping.detect_single_brand(text)
         if not brand_filter(text):
             return False
         key = brand or "__unbranded__"   # relaxed sources accept no-brand posts
-        if counts.get(key, 0) >= limit:
-            return False
-        counts[key] = counts.get(key, 0) + 1
+        with counts_lock:
+            if counts.get(key, 0) >= limit:
+                return False
+            counts[key] = counts.get(key, 0) + 1
         return True
 
     return limited
@@ -1115,10 +1118,12 @@ def main():
     discovered_page_group_sources: list[dict] = []            # discover_page_or_group_posts() results
     total_found = 0
 
-    for idx, src in enumerate(sources, start=1):
+    def _discover_source(idx: int, src: dict):
+        """Discovery for ONE source — runs in a worker thread. Returns
+        ('post', url, post_id) / ('page_group', discovered_dict) / None."""
         url = src.get("url", "").strip()
         if not url:
-            continue
+            return None
         src_type = src.get("type")
         if src_type not in ("post", "page", "group"):
             print(f"⚠️  Source has no valid type set ({src_type!r}) — defaulting to 'page'. "
@@ -1130,33 +1135,54 @@ def main():
             if src_type == "post":
                 post_id = _with_source_retries(url, lambda: discover_post_url(url, cookies))
                 if post_id:
-                    discovered_post_sources.append((url, post_id))
                     print(f"  🔗 Found 1 post")
-                    total_found += 1
-            else:
-                # A source URL that contains the brand name (e.g.
-                # facebook.com/ALDI.USA for brand ALDI) IS the brand's own
-                # page/group — its posts often don't name the brand in the
-                # text, so accept no-brand posts there too. Posts detecting a
-                # DIFFERENT brand are still rejected.
-                def _relaxed(text, _brand=args.brand):
-                    return brand_mapping.detect_single_brand(text) in (_brand, None)
-                relaxed = bool(args.brand) and args.brand.lower() in url.lower()
-                src_filter = make_per_brand_limiter(_relaxed, args.brand_post_limit) if relaxed else effective_filter
-                if relaxed:
-                    print("  🔗 Source URL contains the brand — posts without brand text are accepted too")
-                discovered = _with_source_retries(url, lambda: discover_page_or_group_posts(
-                    job_dir, url, src_type, cookies, args.min_comments,
-                    start_dt, end_dt, args.posts_per_source, src_filter,
-                ))
-                if discovered is not None:
-                    discovered["relaxed_brand"] = args.brand if relaxed else None
-                    discovered_page_group_sources.append(discovered)
-                    print(f"  🔗 Found {len(discovered['posts'])} post(s)")
-                    total_found += len(discovered["posts"])
+                    return ("post", url, post_id)
+                return None
+
+            # A source URL that contains the brand name (e.g.
+            # facebook.com/ALDI.USA for brand ALDI) IS the brand's own
+            # page/group — its posts often don't name the brand in the
+            # text, so accept no-brand posts there too. Posts detecting a
+            # DIFFERENT brand are still rejected.
+            def _relaxed(text, _brand=args.brand):
+                return brand_mapping.detect_single_brand(text) in (_brand, None)
+            relaxed = bool(args.brand) and args.brand.lower() in url.lower()
+            src_filter = make_per_brand_limiter(_relaxed, args.brand_post_limit) if relaxed else effective_filter
+            if relaxed:
+                print("  🔗 Source URL contains the brand — posts without brand text are accepted too")
+            discovered = _with_source_retries(url, lambda: discover_page_or_group_posts(
+                job_dir, url, src_type, cookies, args.min_comments,
+                start_dt, end_dt, args.posts_per_source, src_filter,
+            ))
+            if discovered is not None:
+                discovered["relaxed_brand"] = args.brand if relaxed else None
+                print(f"  🔗 Found {len(discovered['posts'])} post(s)")
+                return ("page_group", discovered)
         except Exception as e:
             print(f"❌ Discovery failed entirely for source: {url}: {e}")
-            continue
+        return None
+
+    # Parallel source discovery: PAGE_SCAN_WORKERS threads scan different
+    # page/group URLs concurrently — the post-list pagination of one source
+    # (the slow part) overlaps the others'. The scrapers are per-call
+    # thread-safe (page/group id passed through, not set on module globals),
+    # and results are merged back in the main thread in source order.
+    worker_count = max(1, min(PAGE_SCAN_WORKERS, len(sources)))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        for result in executor.map(
+            lambda pair: _discover_source(pair[0], pair[1]),
+            enumerate(sources, start=1),
+        ):
+            if result is None:
+                continue
+            if result[0] == "post":
+                _, url, post_id = result
+                discovered_post_sources.append((url, post_id))
+                total_found += 1
+            else:
+                discovered = result[1]
+                discovered_page_group_sources.append(discovered)
+                total_found += len(discovered["posts"])
 
     print(f"\n✅ Discovery complete — found {total_found} post(s) across "
           f"{len(discovered_post_sources) + len(discovered_page_group_sources)}/{len(sources)} source(s).")

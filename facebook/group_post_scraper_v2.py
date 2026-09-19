@@ -681,7 +681,7 @@ def extract_post_data(node, group_name=None, published_at=None, save_root="group
 def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
                  start_date=None, end_date=None, save_root="group_post", max_pages=300,
                  max_images_per_post=None, download_images=True, text_filter=None,
-                 fetch_extra_images=True):
+                 fetch_extra_images=True, group_id=None):
     """Fetch posts from Facebook group
 
     Args:
@@ -708,6 +708,10 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
             images (5+) are fetched later, on demand, via `last_media_id`.
     """
     global GROUP_NAME
+    # Per-call id/name — concurrent callers (threaded page scanning) each get
+    # their own, instead of racing on the module-level GROUP_ID/GROUP_NAME.
+    group_id = group_id or GROUP_ID
+    group_name = GROUP_NAME
     all_posts = []
     batch_posts = []
     cursor = None
@@ -740,7 +744,7 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
             #"sortingSetting": "TOP_POSTS",
             "stream_initial_count": 1,
             "useDefaultActor": False,
-            "id": GROUP_ID,
+            "id": group_id,
         }
         
         payload = {
@@ -759,7 +763,8 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
         
         while empty_retry_count < max_empty_retries:
             try:
-                r = retry_request(GRAPHQL_URL, HEADERS, payload, PROXIES)
+                headers = {**HEADERS, "referer": f"https://www.facebook.com/groups/{group_id}/"}
+                r = retry_request(GRAPHQL_URL, headers, payload, PROXIES)
                 r.raise_for_status()
             except requests.RequestException as e:
                 print(f"Request failed: {e}")
@@ -845,14 +850,14 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
                     continue
 
                 # Extract group name from first post if not set
-                if not GROUP_NAME:
-                    GROUP_NAME = extract_group_name(story_node)
-                    if GROUP_NAME:
-                        print(f"📂 Group name: {GROUP_NAME}")
+                if not group_name:
+                    group_name = extract_group_name(story_node)
+                    if group_name:
+                        print(f"📂 Group name: {group_name}")
 
                 # Check if post already exists
                 temp_post_id = story_node.get('post_id')
-                temp_group_name = GROUP_NAME or extract_group_name(story_node)
+                temp_group_name = group_name or extract_group_name(story_node)
                 if temp_group_name:
                     temp_name_folder = "".join(c for c in temp_group_name if c.isalnum() or c in (' ', '-', '_')).strip() or "Unknown"
                     if post_already_exists(temp_post_id, save_root, temp_name_folder):
@@ -864,7 +869,7 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
                 # the post is skipped, pagination continues.
                 try:
                     post_data = extract_post_data(
-                        story_node, GROUP_NAME, published_at=published_at, save_root=save_root,
+                        story_node, group_name, published_at=published_at, save_root=save_root,
                         max_images=max_images_per_post, download_images=download_images,
                         text_filter=text_filter, fetch_extra_images=fetch_extra_images,
                     )

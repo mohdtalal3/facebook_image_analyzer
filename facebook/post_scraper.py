@@ -610,7 +610,7 @@ def post_already_exists(post_id, base_folder, name_folder):
 def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
                  start_date=None, end_date=None, save_root="page_post", max_pages=300,
                  max_images_per_post=None, download_images=True, text_filter=None,
-                 fetch_extra_images=True):
+                 fetch_extra_images=True, page_id=None):
     """Fetch posts from Facebook page
 
     Args:
@@ -642,6 +642,10 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
             fb_client.download_pending_post_images()).
     """
     global PAGE_NAME
+    # Per-call id/name — concurrent callers (threaded page scanning) each get
+    # their own, instead of racing on the module-level USER_ID/PAGE_NAME.
+    page_id = page_id or USER_ID
+    page_name = PAGE_NAME
     all_posts = []
     batch_posts = []
     cursor = None
@@ -678,7 +682,7 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
             # "taggedInOnly": None,
             # "trackingCode": None,
             # "useDefaultActor": False,
-            "id": USER_ID,
+            "id": page_id,
             "__relay_internal__pv__GHLShouldChangeAdIdFieldNamerelayprovider": True,
             "__relay_internal__pv__GHLShouldChangeSponsoredDataFieldNamerelayprovider": True,
             "__relay_internal__pv__CometFeedStory_enable_reactor_facepilerelayprovider": False,
@@ -723,7 +727,8 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
         cleaned_data = []
         
         while empty_retry_count < max_empty_retries:
-            r = retry_request(GRAPHQL_URL, BASE_HEADERS, payload, PROXIES)
+            headers = {**BASE_HEADERS, "referer": f"https://www.facebook.com/profile.php?id={page_id}"}
+            r = retry_request(GRAPHQL_URL, headers, payload, PROXIES)
             # with open("response.txt", "w", encoding="utf-8") as f:
             #     f.write(r.text)
             print("Status code:", r.status_code)
@@ -819,17 +824,17 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
                 continue
 
             # Extract page name from first post if not set
-            if not PAGE_NAME:
-                PAGE_NAME = extract_page_name(node)
-                if PAGE_NAME:
-                    print(f"📂 Page name: {PAGE_NAME}")
+            if not page_name:
+                page_name = extract_page_name(node)
+                if page_name:
+                    print(f"📂 Page name: {page_name}")
 
             post_id = node.get("post_id")
             if not post_id:
                 continue
 
             # Check if post already exists
-            temp_page_name = PAGE_NAME or extract_page_name(node)
+            temp_page_name = page_name or extract_page_name(node)
             if temp_page_name:
                 temp_name_folder = "".join(c for c in temp_page_name if c.isalnum() or c in (' ', '-', '_')).strip() or "Unknown"
                 if post_already_exists(post_id, save_root, temp_name_folder):
@@ -867,13 +872,13 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
                 "text": message,
                 "permalink": permalink,
                 "comment_count": comment_count,
-                "page_name": PAGE_NAME,
+                "page_name": page_name,
                 "published_at": published_at,
             }
 
             # Sanitize page name folder
-            if PAGE_NAME:
-                name_folder = "".join(c for c in PAGE_NAME if c.isalnum() or c in (' ', '-', '_')).strip()
+            if page_name:
+                name_folder = "".join(c for c in page_name if c.isalnum() or c in (' ', '-', '_')).strip()
                 if not name_folder:
                     name_folder = "Unknown"
             else:

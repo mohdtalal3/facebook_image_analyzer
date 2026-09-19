@@ -30,6 +30,8 @@ EDITABLE: dict[str, tuple] = {
                                "Concurrent per-post image download threads"),
     "POSTS_PER_SOURCE_DEFAULT": (int, "Pipeline toggles", "Posts per source",
                                  "Default --posts-per-source limit for page/group fetch"),
+    "PAGE_SCAN_WORKERS": (int, "Pipeline toggles", "Page scan workers",
+                          "Parallel page/group URL discovery threads in Phase 1"),
     "MIN_IMAGES_FOR_KEEP": (int, "Pipeline toggles", "Min images to keep",
                             "A post needs more than this many images to be kept (brand filter)"),
 

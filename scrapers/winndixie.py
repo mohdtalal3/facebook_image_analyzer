@@ -6,11 +6,11 @@ from bs4 import BeautifulSoup
 from curl_cffi import requests
 
 
-class KrogerSearcher:
-    """Kroger product search via Instacart's GraphQL search endpoint — the
-    same API ALDI's and Costco's storefronts use (identical persisted-query
-    hash and response shape), just on instacart.com with Kroger's shop/zone
-    ids."""
+class PublixSearcher:
+    """Publix product search via Instacart's GraphQL search endpoint — the
+    same API ALDI's, Costco's and Kroger's storefronts use (identical
+    persisted-query hash and response shape), just on instacart.com with
+    Publix's shop/zone ids."""
 
     def __init__(self, proxy=None):
         self.proxy = proxy
@@ -32,7 +32,7 @@ class KrogerSearcher:
         for attempt in range(1, max_retries + 1):
             try:
                 r = self.session.get(
-                    "https://www.instacart.com/store/kroger",
+                    "https://www.instacart.com/store/publix",
                     impersonate="chrome131",
                     proxies=self.proxies,
                     timeout=30,
@@ -69,7 +69,7 @@ class KrogerSearcher:
         variables = {
             "action": None,
             "query": query,
-            "pageViewId": "2d969b2e-aa80-53c1-ad38-8300268be342",
+            "pageViewId": "b2945d42-4cb9-57d1-9763-641447092e6c",
             "elevatedProductId": None,
             "searchSource": "search",
             "filters": [],
@@ -83,7 +83,7 @@ class KrogerSearcher:
             "contentManagementSearchParams": {
                 "itemGridColumnCount": 3
             },
-            "shopId": "94359",
+            "shopId": "66418",
             "postalCode": "94105",
             "zoneId": "1",
             "first": 4,
@@ -100,11 +100,11 @@ class KrogerSearcher:
             "accept": "*/*",
             "content-type": "application/json",
             "origin": "https://www.instacart.com",
-            "referer": f"https://www.instacart.com/store/kroger/s?k={quote(query)}",
+            "referer": f"https://www.instacart.com/store/publix/s?k={quote(query)}",
             "x-client-identifier": "web",
             "x-client-user-id": "21192267958514052",
             "x-ic-view-layer": "true",
-            "x-page-view-id": "2d969b2e-aa80-53c1-ad38-8300268be342",
+            "x-page-view-id": "b2945d42-4cb9-57d1-9763-641447092e6c",
         }
 
         params = {
@@ -126,9 +126,9 @@ class KrogerSearcher:
 
         data = r.json()
 
-        # with open(Path(__file__).parent / "kroger_last_response.json", "w", encoding="utf-8") as f:
+        # with open(Path(__file__).parent / "publix_last_response.json", "w", encoding="utf-8") as f:
         #     json.dump(data, f, indent=2, ensure_ascii=False)
-        # print("✓ Raw response saved to kroger_last_response.json")
+        # print("✓ Raw response saved to publix_last_response.json")
 
         if data.get("errors"):
             raise Exception(data["errors"])
@@ -186,7 +186,7 @@ class KrogerSearcher:
                 .get("url")
             ),
             "product_id": product_id,
-            "product_url": f"https://www.instacart.com/store/kroger/products/{evergreen_url}",
+            "product_url": f"https://www.instacart.com/store/publix/products/{evergreen_url}",
             "description": description,
             "available": (
                 product.get("availability", {})
@@ -211,7 +211,7 @@ class KrogerSearcher:
     def _get_description_once(self, product_id):
         from urllib.parse import unquote
 
-        url = f"https://www.instacart.com/store/kroger/products/{product_id}"
+        url = f"https://www.instacart.com/store/publix/products/{product_id}"
 
         r = self.session.get(
             url,
@@ -259,11 +259,11 @@ if __name__ == "__main__":
 
     proxy = None
 
-    kroger = KrogerSearcher(proxy)
+    publix = PublixSearcher(proxy)
 
-    kroger.warmup()
+    publix.warmup()
 
-    product = kroger.search("Cranberry Compote")
+    product = publix.search("snapple apple")
 
     if product:
 

@@ -94,14 +94,14 @@ def fetch_page_posts(page_id: str, limit: int, min_comments: int = 0,
                       start_date=None, end_date=None, save_root="page_post",
                       batch_size=10, on_batch_complete=None, max_images_per_post=None,
                       download_images=True, text_filter=None, fetch_extra_images=True):
-    post_scraper.USER_ID = page_id
-    post_scraper.BASE_HEADERS["referer"] = f"https://www.facebook.com/profile.php?id={page_id}"
+    # page_id is passed through to fetch_posts (per-call payload/headers) —
+    # NOT set on post_scraper globals, so concurrent page fetches don't race.
     return post_scraper.fetch_posts(
         limit=limit, min_comments=min_comments, batch_size=batch_size,
         on_batch_complete=on_batch_complete, start_date=start_date, end_date=end_date,
         save_root=save_root, max_images_per_post=max_images_per_post,
         download_images=download_images, text_filter=text_filter,
-        fetch_extra_images=fetch_extra_images,
+        fetch_extra_images=fetch_extra_images, page_id=page_id,
     )
 
 
@@ -109,14 +109,15 @@ def fetch_group_posts(group_id: str, limit: int, min_comments: int = 0,
                        start_date=None, end_date=None, save_root="group_post",
                        batch_size=10, on_batch_complete=None, max_images_per_post=None,
                        download_images=True, text_filter=None, fetch_extra_images=True):
-    group_post_scraper_v2.GROUP_ID = group_id
-    group_post_scraper_v2.HEADERS["referer"] = f"https://www.facebook.com/groups/{group_id}/"
+    # group_id is passed through to fetch_posts (per-call payload/headers) —
+    # NOT set on group_post_scraper_v2 globals, so concurrent group fetches
+    # don't race.
     return group_post_scraper_v2.fetch_posts(
         limit=limit, min_comments=min_comments, batch_size=batch_size,
         on_batch_complete=on_batch_complete, start_date=start_date, end_date=end_date,
         save_root=save_root, max_images_per_post=max_images_per_post,
         download_images=download_images, text_filter=text_filter,
-        fetch_extra_images=fetch_extra_images,
+        fetch_extra_images=fetch_extra_images, group_id=group_id,
     )
 
 
