@@ -612,8 +612,9 @@ def extract_post_data(node, group_name=None, published_at=None, save_root="group
     if not node or node.get('__typename') != 'Story':
         return None
 
-    # Get the post content from the nested structure
-    content_story = node.get('comet_sections', {}).get('content', {}).get('story', {})
+    # Get the post content from the nested structure (`or {}` guards against
+    # explicit JSON nulls anywhere in the chain)
+    content_story = (((node.get('comet_sections') or {}).get('content') or {}).get('story')) or {}
 
     # Extract message/text
     message = ''
@@ -801,7 +802,10 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
             if not isinstance(item, dict):
                 continue
             
-            node = item.get('node', {})
+            # `or {}` guards against explicit JSON nulls — a key that exists
+            # with value null makes .get(key, {}) return None, and the .get
+            # chain below would crash on it.
+            node = item.get('node') or {}
             node_typename = node.get('__typename')
             
             # Collect Story nodes from multiple sources
@@ -813,9 +817,9 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
             
             # Story nodes inside Group edges
             elif node_typename == 'Group':
-                edges = node.get('group_feed', {}).get('edges', [])
+                edges = (node.get('group_feed') or {}).get('edges') or []
                 for edge in edges:
-                    edge_node = edge.get('node', {})
+                    edge_node = edge.get('node') or {}
                     if edge_node.get('__typename') == 'Story':
                         story_nodes.append(edge_node)
             
@@ -899,7 +903,7 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
             
             # Look for pagination info
             if 'page_info' in item:
-                page_info = item['page_info']
+                page_info = item['page_info'] or {}
                 if page_info.get('has_next_page'):
                     next_cursor = page_info.get('end_cursor')
         

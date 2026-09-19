@@ -729,8 +729,8 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
         while empty_retry_count < max_empty_retries:
             headers = {**BASE_HEADERS, "referer": f"https://www.facebook.com/profile.php?id={page_id}"}
             r = retry_request(GRAPHQL_URL, headers, payload, PROXIES)
-            # with open("response.txt", "w", encoding="utf-8") as f:
-            #     f.write(r.text)
+            with open("response.txt", "w", encoding="utf-8") as f:
+                f.write(r.text)
             print("Status code:", r.status_code)
             cleaned_data = parse_fb_response(r.text)
             
@@ -766,17 +766,21 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
         for block in cleaned_data:
             if not isinstance(block, dict):
                 continue
-            
-            node = block.get("node", {})
+
+            # `or {}` guards against explicit JSON nulls — a key that exists
+            # with value null makes .get(key, {}) return None, and the .get
+            # chain below would crash on it.
+            node = block.get("node") or {}
             node_typename = node.get("__typename")
-            
+
             # Check if this block has timeline edges
-            if "timeline_list_feed_units" in node:
+            units = node.get("timeline_list_feed_units") or {}
+            if units:
                 timeline_block = block
-                edges = node["timeline_list_feed_units"].get("edges", [])
+                edges = units.get("edges") or []
                 for edge in edges:
-                    edge_node = edge.get("node")
-                    if edge_node and edge_node.get("__typename") == "Story":
+                    edge_node = edge.get("node") or {}
+                    if edge_node.get("__typename") == "Story":
                         story_nodes.append(edge_node)
             
             # Check if this block itself is a Story node
@@ -841,15 +845,16 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
                     print(f"  ⏭️  Skipping already scraped post: {post_id}")
                     continue
 
-            feedback_id = node.get("feedback", {}).get("id")
+            feedback_id = (node.get("feedback") or {}).get("id")
 
+            # `or {}` at every level — a null anywhere in the chain (e.g.
+            # "comet_sections": null) would crash the .get chain and kill
+            # the whole source scrape.
             message = (
-                node.get("comet_sections", {})
-                .get("content", {})
-                .get("story", {})
-                .get("message", {})
-                .get("text")
-            )
+                (node.get("comet_sections") or {})
+                .get("content") or {}
+            ).get("story") or {}
+            message = (message.get("message") or {}).get("text")
 
             # Caller-supplied text filter (e.g. brand-keyword check) runs
             # BEFORE extract_media() below — a rejected post never triggers
@@ -927,7 +932,10 @@ def fetch_posts(limit=10, min_comments=0, batch_size=10, on_batch_complete=None,
             break
 
         # update cursor - get page_info from timeline_block or find it in cleaned_data
-        page_info = timeline_block["node"]["timeline_list_feed_units"].get("page_info")
+        page_info = None
+        if timeline_block:
+            units = ((timeline_block.get("node") or {}).get("timeline_list_feed_units")) or {}
+            page_info = units.get("page_info")
         
         # If not in timeline_block, search for it in cleaned_data array
         if not page_info:
