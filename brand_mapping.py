@@ -31,6 +31,7 @@ BRAND_KEYWORDS: dict[str, list[str]] = {
     "Publix": ["publix"],
     "Kroger": ["kroger"],
     "Winn-Dixie": ["winn dixie", "winndixie", "winn dixie"],
+    "Five Below": ["five below", "fivebelow"],
     "Dollar General": ["dollar general", "dg", "d_g", "d g"],
 }
 
@@ -48,6 +49,7 @@ BRAND_SLUGS: dict[str, str] = {
     "Publix": "publix",
     "Kroger": "kroger",
     "Winn-Dixie": "winn-dixie",
+    "Five Below": "five-below",
     "Dollar General": "dollar-general",
 }
 

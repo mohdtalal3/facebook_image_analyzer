@@ -825,9 +825,9 @@ def enrich_images_with_scrapes(job_dir: Path, brand: str, brand_slug: str, categ
         filename, entry = item
         thread_searcher = _thread_searcher()
         query = entry.get("product_name")
-        # Target and Costco (Instacart) search work best with the KIE brand
-        # prepended to the product name (e.g. "Drizzilicious Very Berry Bites")
-        if brand in ("Target", "Costco") and entry.get("brand"):
+        # Target, Costco and Five Below (Instacart) search work best with the
+        # KIE brand prepended to the product name (e.g. "Amos Peelerz Mummies")
+        if brand in ("Target", "Costco", "Five Below") and entry.get("brand"):
             query = f"{entry['brand']} {query}"
         try:
             result = thread_searcher.search(query)
@@ -842,8 +842,12 @@ def enrich_images_with_scrapes(job_dir: Path, brand: str, brand_slug: str, categ
     with ThreadPoolExecutor(max_workers=SCRAPER_WORKERS) as executor:
         for (filename, entry), result in executor.map(_scrape_one, pending):
             if result:
+                # Five Below: keep the KIE image-analysis name for publishing —
+                # Instacart's listing names don't match the post's wording.
+                published_name = entry.get("product_name") if brand == "Five Below" \
+                    else result.get("name")
                 entry["scraped"] = {
-                    "name": result.get("name"),
+                    "name": published_name,
                     "price": result.get("price"),
                     "size": result.get("size"),
                     "description": result.get("description"),
