@@ -6,11 +6,11 @@ from bs4 import BeautifulSoup
 from curl_cffi import requests
 
 
-class PublixSearcher:
-    """Publix product search via Instacart's GraphQL search endpoint — the
-    same API ALDI's, Costco's and Kroger's storefronts use (identical
-    persisted-query hash and response shape), just on instacart.com with
-    Publix's shop/zone ids."""
+class WinnDixieSearcher:
+    """Winn-Dixie product search via Instacart's GraphQL search endpoint —
+    the same API ALDI's, Costco's, Kroger's, Publix's and Sam's Club's
+    storefronts use (same response shape), just on instacart.com with
+    Winn-Dixie's shop/zone ids."""
 
     def __init__(self, proxy=None):
         self.proxy = proxy
@@ -32,7 +32,7 @@ class PublixSearcher:
         for attempt in range(1, max_retries + 1):
             try:
                 r = self.session.get(
-                    "https://www.instacart.com/store/publix",
+                    "https://www.instacart.com/store/winn-dixie",
                     impersonate="chrome131",
                     proxies=self.proxies,
                     timeout=30,
@@ -69,7 +69,7 @@ class PublixSearcher:
         variables = {
             "action": None,
             "query": query,
-            "pageViewId": "b2945d42-4cb9-57d1-9763-641447092e6c",
+            "pageViewId": "3cbe0e2c-fe6d-5e4c-aeeb-5dbb14c9eafc",
             "elevatedProductId": None,
             "searchSource": "search",
             "filters": [],
@@ -83,16 +83,16 @@ class PublixSearcher:
             "contentManagementSearchParams": {
                 "itemGridColumnCount": 3
             },
-            "shopId": "66418",
-            "postalCode": "94105",
-            "zoneId": "1",
+            "shopId": "99690",
+            "postalCode": "75231",
+            "zoneId": "90",
             "first": 4,
         }
 
         extensions = {
             "persistedQuery": {
                 "version": 1,
-                "sha256Hash": "406e5b9dfc9dc9b209b2c72012622de595fb4040d17f68efa4d4e104657273ee",
+                "sha256Hash": "c127efb3fa85276388954593f2c1a27eb0775dd7b0964e39c949e7fd89c7ef19",
             }
         }
 
@@ -100,11 +100,11 @@ class PublixSearcher:
             "accept": "*/*",
             "content-type": "application/json",
             "origin": "https://www.instacart.com",
-            "referer": f"https://www.instacart.com/store/publix/s?k={quote(query)}",
+            "referer": f"https://www.instacart.com/store/winn-dixie/s?k={quote(query)}",
             "x-client-identifier": "web",
             "x-client-user-id": "21192267958514052",
             "x-ic-view-layer": "true",
-            "x-page-view-id": "b2945d42-4cb9-57d1-9763-641447092e6c",
+            "x-page-view-id": "3cbe0e2c-fe6d-5e4c-aeeb-5dbb14c9eafc",
         }
 
         params = {
@@ -126,9 +126,9 @@ class PublixSearcher:
 
         data = r.json()
 
-        # with open(Path(__file__).parent / "publix_last_response.json", "w", encoding="utf-8") as f:
+        # with open(Path(__file__).parent / "winndixie_last_response.json", "w", encoding="utf-8") as f:
         #     json.dump(data, f, indent=2, ensure_ascii=False)
-        # print("✓ Raw response saved to publix_last_response.json")
+        # print("✓ Raw response saved to winndixie_last_response.json")
 
         if data.get("errors"):
             raise Exception(data["errors"])
@@ -186,7 +186,7 @@ class PublixSearcher:
                 .get("url")
             ),
             "product_id": product_id,
-            "product_url": f"https://www.instacart.com/store/publix/products/{evergreen_url}",
+            "product_url": f"https://www.instacart.com/store/winn-dixie/products/{evergreen_url}",
             "description": description,
             "available": (
                 product.get("availability", {})
@@ -211,7 +211,7 @@ class PublixSearcher:
     def _get_description_once(self, product_id):
         from urllib.parse import unquote
 
-        url = f"https://www.instacart.com/store/publix/products/{product_id}"
+        url = f"https://www.instacart.com/store/winn-dixie/products/{product_id}"
 
         r = self.session.get(
             url,
@@ -259,11 +259,11 @@ if __name__ == "__main__":
 
     proxy = None
 
-    publix = PublixSearcher(proxy)
+    winn_dixie = WinnDixieSearcher(proxy)
 
-    publix.warmup()
+    winn_dixie.warmup()
 
-    product = publix.search("snapple apple")
+    product = winn_dixie.search("frozen berries")
 
     if product:
 
