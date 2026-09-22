@@ -960,12 +960,8 @@ def enrich_images_with_scrapes(job_dir: Path, brand: str, brand_slug: str, categ
     with ThreadPoolExecutor(max_workers=SCRAPER_WORKERS) as executor:
         for (filename, entry), result in executor.map(_scrape_one, pending):
             if result:
-                # Five Below: keep the KIE image-analysis name for publishing —
-                # Instacart's listing names don't match the post's wording.
-                published_name = entry.get("product_name") if brand == "Five Below" \
-                    else result.get("name")
                 entry["scraped"] = {
-                    "name": published_name,
+                    "name": result.get("name"),
                     "price": result.get("price"),
                     "size": result.get("size"),
                     "description": result.get("description"),
