@@ -60,6 +60,10 @@ EDITABLE: dict[str, tuple] = {
     # ── Publishing ──
     "SKIP_PRODUCTS_WITHOUT_PRICE": (bool, "Publishing", "Skip products without price",
                                     "Don't upload/publish products whose scrape found no price (off = publish everything)"),
+    "MAX_FOOD_PRODUCTS": (int, "Publishing", "Max food products",
+                          "Cap on food products published per job — extras are removed before AI generation (0 = unlimited)"),
+    "MAX_NON_FOOD_PRODUCTS": (int, "Publishing", "Max non-food products",
+                              "Cap on non-food products published per job — extras are removed before AI generation (0 = unlimited)"),
 
     # ── Image processing ──
     "MAX_PROCESSED_BYTES": (int, "Image processing", "Processed image cap (bytes)",

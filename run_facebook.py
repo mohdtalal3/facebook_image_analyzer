@@ -62,7 +62,7 @@ from constants import (
     POSTS_PER_SOURCE_DEFAULT, MIN_IMAGES_FOR_KEEP,
     AI_IMAGE_COMPARE, AI_IMAGE_MAX_BYTES, AI_IMAGE_WORKERS,
     DEDUPE_PRODUCTS, DEDUPE_THRESHOLD, GENERATE_AI_IMAGES,
-    PAGE_SCAN_WORKERS,
+    MAX_FOOD_PRODUCTS, MAX_NON_FOOD_PRODUCTS, PAGE_SCAN_WORKERS,
     PRICE_ON_IMAGE, SCRAPER_ANALYSIS, SCRAPER_WORKERS,
     SKIP_PRODUCTS_WITHOUT_PRICE,
 )
@@ -731,6 +731,17 @@ def dedupe_category_images(job_dir: Path, brand_slug: str, category: str) -> int
         return 0
 
     images_dir = job_dir / brand_slug / category / "images"
+    # Popularity count FIRST (before duplicates are dropped): how many posts
+    # showed each product name. The kept entry records it as "appearances" —
+    # the product-cap stage later prioritizes products seen on many pages.
+    name_counts: dict[str, int] = {}
+    for entry in analysis.values():
+        name = entry.get("product_name")
+        if name:
+            norm = normalize_name(name)
+            name_counts[norm] = name_counts.get(norm, 0) + 1
+
+    images_dir = job_dir / brand_slug / category / "images"
     seen_norms: list[str] = []
     duplicates: list[str] = []
     for filename, entry in analysis.items():
@@ -743,6 +754,7 @@ def dedupe_category_images(job_dir: Path, brand_slug: str, category: str) -> int
             print(f"  ⏭️  Duplicate: {filename} — '{name}'")
         else:
             seen_norms.append(norm)
+            entry["appearances"] = name_counts.get(norm, 1)
 
     if not duplicates:
         print(f"✅ {category}: no duplicate products found.")
@@ -763,6 +775,112 @@ def dedupe_category_images(job_dir: Path, brand_slug: str, category: str) -> int
         print(f"  ⚠️  Could not write deduped analysis back to {analysis_file}: {e}")
     print(f"⏭️  Removed {len(duplicates)} duplicate product(s) from {analysis_file.name}.")
     return len(duplicates)
+
+
+def cap_category_products(job_dir: Path, brand_slug: str, category: str) -> int:
+    """Trim the clean dataset (post-dedupe, post-scrape) to at most
+    MAX_FOOD_PRODUCTS / MAX_NON_FOOD_PRODUCTS entries per category, BEFORE AI
+    image generation — only products that will actually be published should
+    cost AI-generation credits. Removed products' entries and image files are
+    deleted, same as dedupe.
+
+    Selection priority (food): products that appeared on many posts first
+    (the "appearances" count dedupe recorded), then all Meat & Seafood
+    products, then the rest spread round-robin across subcategories so every
+    section of the published page stays populated. Non-food has no
+    subcategories: duplicates first, then original order. Returns the number
+    of products removed. Never raises."""
+    cap = MAX_FOOD_PRODUCTS if category == "food" else MAX_NON_FOOD_PRODUCTS
+    if not cap or cap < 1:
+        return 0
+    analysis_file = job_dir / brand_slug / category / "image_analysis.json"
+    if not analysis_file.exists():
+        return 0
+    try:
+        analysis = json.loads(analysis_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"⚠️  Could not read {analysis_file}: {e}")
+        return 0
+
+    images_dir = job_dir / brand_slug / category / "images"
+
+    # No-price products are never published (SKIP_PRODUCTS_WITHOUT_PRICE) —
+    # drop them here so they don't consume cap slots either.
+    if SKIP_PRODUCTS_WITHOUT_PRICE:
+        no_price = [fn for fn, e in analysis.items()
+                    if not (e.get("scraped") or {}).get("price")]
+        for fn in no_price:
+            del analysis[fn]
+            img = images_dir / fn
+            try:
+                if img.exists():
+                    img.unlink()
+            except Exception as e:
+                print(f"  ⚠️  Could not remove image {fn}: {e}")
+        if no_price:
+            print(f"  ⏭️  Removed {len(no_price)} product(s) without a scraped price before capping")
+
+    order = list(analysis.keys())
+    if len(order) <= cap:
+        print(f"✅ {category}: {len(analysis)} product(s) within cap of {cap} — nothing removed.")
+        return 0
+
+    def _appearances(fn):
+        return (analysis[fn] or {}).get("appearances") or 1
+
+    def _is_meat(fn):
+        return (analysis[fn].get("subcategory") == "Meat & Seafood")
+
+    selected: list[str] = []
+
+    # 1) Crowd-verified products first — most-seen across posts, original
+    # order breaking ties.
+    dupes = sorted((fn for fn in order if _appearances(fn) >= 2),
+                   key=lambda fn: (-_appearances(fn), order.index(fn)))
+    selected.extend(dupes[:cap])
+
+    # 2) All Meat & Seafood products (food only).
+    if category == "food" and len(selected) < cap:
+        for fn in order:
+            if len(selected) >= cap:
+                break
+            if fn not in selected and _is_meat(fn):
+                selected.append(fn)
+
+    # 3) Fill remaining slots round-robin across subcategories (original
+    # order within each) so every page section stays populated.
+    by_sub: dict[str, list[str]] = {}
+    for fn in order:
+        if fn not in selected:
+            by_sub.setdefault(analysis[fn].get("subcategory") or "__other__", []).append(fn)
+    subs = list(by_sub)
+    while len(selected) < cap and any(by_sub[s] for s in subs):
+        for sub in subs:
+            if by_sub[sub]:
+                selected.append(by_sub[sub].pop(0))
+                if len(selected) >= cap:
+                    break
+
+    removed = [fn for fn in order if fn not in selected]
+    for fn in removed:
+        del analysis[fn]
+        img = images_dir / fn
+        try:
+            if img.exists():
+                img.unlink()
+        except Exception as e:
+            print(f"  ⚠️  Could not remove image {fn}: {e}")
+
+    try:
+        analysis_file.write_text(json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        print(f"  ⚠️  Could not write capped analysis back to {analysis_file}: {e}")
+
+    dup_kept = sum(1 for fn in selected if _appearances(fn) >= 2)
+    meat_kept = sum(1 for fn in selected if _is_meat(fn))
+    print(f"✂️  {category}: capped {len(order)} → {len(selected)} product(s), removed {len(removed)} "
+          f"(multi-post products: {dup_kept}, Meat & Seafood: {meat_kept})")
+    return len(removed)
 
 
 def enrich_images_with_scrapes(job_dir: Path, brand: str, brand_slug: str, category: str) -> int:
@@ -1289,6 +1407,8 @@ def main():
         dedupe_category_images(job_dir, brand_slug, category)
         print("[STAGE] scraping_products")
         enrich_images_with_scrapes(job_dir, args.brand, brand_slug, category)
+        print("[STAGE] capping_products")
+        cap_category_products(job_dir, brand_slug, category)
         print("[STAGE] generating_ai_images")
         generate_ai_images(job_dir, args.brand, brand_slug, category, image_prompt=args.image_prompt)
 

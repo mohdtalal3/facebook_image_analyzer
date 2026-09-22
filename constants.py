@@ -64,6 +64,14 @@ SKIP_PRODUCTS_WITHOUT_PRICE = True     # when True, images whose analysis entry 
                                 # price (scraped.price) are skipped at publish time — they
                                 # never upload to WordPress or appear on the page. When
                                 # False, everything publishes (price shown only when known).
+MAX_FOOD_PRODUCTS = 50            # cap on food products published per job — after dedupe +
+                                # scraper analysis (clean dataset), products are trimmed to
+                                # this many BEFORE AI generation. Priority: products that
+                                # appeared on many posts first, then all Meat & Seafood,
+                                # then the rest spread round-robin across subcategories.
+                                # 0 = unlimited.
+MAX_NON_FOOD_PRODUCTS = 50        # same cap for non-food (no subcategories there —
+                                # duplicates first, then original order). 0 = unlimited.
 
 # ── image_pipeline.py ──
 MAX_PROCESSED_BYTES = 204800        # 200 KB cap for processed (grayscale) images
