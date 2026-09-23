@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 
 from .aldi import AldiSearcher
 from .costco import CostcoSearcher
+from .dollar_general import DollarGeneralSearcher
 from .dollartree import DollarTreeSearcher
 from .fivebelow import FiveBelowSearcher
 from .foodlion import FoodLionSearcher
@@ -38,6 +39,7 @@ load_dotenv()
 SEARCHERS: dict[str, type] = {
     "ALDI": AldiSearcher,
     "Costco": CostcoSearcher,
+    "Dollar General": DollarGeneralSearcher,
     "Dollar Tree": DollarTreeSearcher,
     "Five Below": FiveBelowSearcher,
     "Food Lion": FoodLionSearcher,

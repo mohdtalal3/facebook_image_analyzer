@@ -202,7 +202,8 @@ def _do_scan(workspace_id: str, manual: bool = False):
         end_date=end_date,
         min_comments=min_comments,
         triggered_by="manual-run-now" if manual else "schedule",
-        skip_post_ids=existing_state.get("processed_post_ids"),
+        # No skip_post_ids — scheduled runs process every post in the date
+        # window, exactly like a manual run (no cross-run post skipping).
     )
     for line in scan_log_lines:
         append_log(job_id, line)

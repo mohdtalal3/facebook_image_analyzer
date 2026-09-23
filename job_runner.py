@@ -12,6 +12,7 @@ no sub-jobs are launched.
 
 import json
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -120,6 +121,40 @@ def _finish_scrape_job(job_id: str, workspace_id: str):
     _merge_manifest_into_workspace(job_id, workspace_id)
 
 
+# ── Global job queue ──
+# Only ONE pipeline subprocess runs at a time across the whole app — a job
+# launched while another is still running waits in this queue ("queued"
+# status) and starts when the previous one finishes. Every job is a separate
+# process with its own KIE rate limiter, so running two concurrently could
+# collectively blow KIE's ~20-requests/10s account cap (429s); serializing
+# them keeps every job inside the shared account budget.
+_job_queue: "queue.Queue" = queue.Queue()
+_queue_worker_started = False
+
+
+def _queue_worker():
+    while True:
+        job_id, ws_id, cmd, env, temp_files, on_success = _job_queue.get()
+        try:
+            append_log(job_id, f"[{datetime.now().strftime('%H:%M:%S')}] ▶️ Job started (was queued)")
+            run_subprocess_job(job_id, ws_id, cmd, env, temp_files, on_success=on_success)
+        except Exception as exc:
+            append_log(job_id, f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Queue worker error: {exc}")
+        finally:
+            _job_queue.task_done()
+
+
+def _enqueue_job(job_id: str, ws_id: str, cmd: list, env: dict,
+                 temp_files: list, on_success=None):
+    """Queue a pipeline job and make sure the single worker thread is
+    running. Jobs execute strictly one at a time, in launch order."""
+    global _queue_worker_started
+    _job_queue.put((job_id, ws_id, cmd, env, temp_files, on_success))
+    if not _queue_worker_started:
+        threading.Thread(target=_queue_worker, daemon=True, name="job-queue-worker").start()
+        _queue_worker_started = True
+
+
 def launch_scrape_job(
     ws: dict,
     sources: list[dict],
@@ -177,7 +212,7 @@ def launch_scrape_job(
         "end_date": end_date,
         "min_comments": min_comments,
         "brand_post_limit": brand_post_limit or 0,
-        "status": "pending",
+        "status": "queued",
         "triggered_by": triggered_by,
         "created_at": datetime.now().isoformat(),
         "finished_at": None,
@@ -248,12 +283,12 @@ def launch_scrape_job(
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
 
-    t = threading.Thread(
-        target=run_subprocess_job,
-        args=(job_id, ws["id"], cmd, env, temp_files),
-        kwargs={"on_success": lambda jid: _finish_scrape_job(jid, ws["id"])},
-        daemon=True,
+    # Queue the job — it runs when the currently-running pipeline job (if
+    # any) finishes, keeping every job inside the shared KIE account limits.
+    update_job(job_id, {"status": "queued"})
+    _enqueue_job(
+        job_id, ws["id"], cmd, env, temp_files,
+        on_success=lambda jid: _finish_scrape_job(jid, ws["id"]),
     )
-    t.start()
 
     return job_id
