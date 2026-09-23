@@ -21,6 +21,7 @@ from .costco import CostcoSearcher
 from .fivebelow import FiveBelowSearcher
 from .foodlion import FoodLionSearcher
 from .heb import HEBSearcher
+from .hyvee import HyVeeSearcher
 from .kroger import KrogerSearcher
 from .publix import PublixSearcher
 from .samsclub import SamsClubSearcher
@@ -38,6 +39,7 @@ SEARCHERS: dict[str, type] = {
     "Five Below": FiveBelowSearcher,
     "Food Lion": FoodLionSearcher,
     "H-E-B": HEBSearcher,
+    "Hy-Vee": HyVeeSearcher,
     "Kroger": KrogerSearcher,
     "Publix": PublixSearcher,
     "Sam's Club": SamsClubSearcher,

@@ -946,7 +946,7 @@ def enrich_images_with_scrapes(job_dir: Path, brand: str, brand_slug: str, categ
         # Instacart-based searches work best with the KIE brand prepended to
         # the product name (e.g. "Amos Peelerz Mummies")
         if brand in ("Target", "Costco", "Five Below", "Walmart", "Food Lion",
-                     "H-E-B") and entry.get("brand"):
+                     "H-E-B", "Hy-Vee") and entry.get("brand"):
             query = f"{entry['brand']} {query}"
         try:
             result = thread_searcher.search(query)
