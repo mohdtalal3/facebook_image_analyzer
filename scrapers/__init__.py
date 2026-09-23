@@ -27,6 +27,7 @@ from .kroger import KrogerSearcher
 from .publix import PublixSearcher
 from .samsclub import SamsClubSearcher
 from .target import TargetSearcher
+from .trader_joes import TraderJoesSearcher
 from .walmart import WalmartSearcher
 from .winndixie import WinnDixieSearcher
 
@@ -46,6 +47,7 @@ SEARCHERS: dict[str, type] = {
     "Publix": PublixSearcher,
     "Sam's Club": SamsClubSearcher,
     "Target": TargetSearcher,
+    "Trader Joe's": TraderJoesSearcher,
     "Walmart": WalmartSearcher,
     "Winn-Dixie": WinnDixieSearcher,
 }
