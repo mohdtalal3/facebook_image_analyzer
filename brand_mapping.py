@@ -34,6 +34,7 @@ BRAND_KEYWORDS: dict[str, list[str]] = {
     "Five Below": ["five below", "fivebelow"],
     "Food Lion": ["food lion", "foodlion"],
     "Dollar General": ["dollar general", "dg", "d_g", "d g"],
+    "Dollar Tree": ["dollar tree", "dollartree"],
 }
 
 # Canonical brand -> output folder slug (see CONTEXT.md output layout).
@@ -52,6 +53,7 @@ BRAND_SLUGS: dict[str, str] = {
     "Winn-Dixie": "winn-dixie",
     "Five Below": "five-below",
     "Food Lion": "food-lion",
+    "Dollar Tree": "dollar-tree",
     "Dollar General": "dollar-general",
 }
 
