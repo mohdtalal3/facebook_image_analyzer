@@ -24,7 +24,7 @@ load_dotenv()
 
 KIE_API_KEY = os.getenv("KIE_API_KEY", "")
 UPLOAD_URL = "https://kieai.redpandaai.co/api/file-stream-upload"
-CHAT_COMPLETIONS_URL = "https://api.kie.ai/gemini-3-8-flash-openai/v1/chat/completions"
+CHAT_COMPLETIONS_URL = "https://api.kie.ai/gemini-3-6-flash-openai/v1/chat/completions"
 
 HEADERS_AUTH = {"Authorization": f"Bearer {KIE_API_KEY}"}
 
@@ -289,7 +289,7 @@ def analyze_product_image(image_url: str, timeout: int = 120) -> dict:
     recording a failed-analysis placeholder instead of losing the post.
     """
     payload = {
-        "model": "gemini-3-8-flash-openai",
+        "model": "gemini-3-6-flash-openai",
         "stream": False,  # default is true (SSE) — we want one JSON response back
         "messages": [
             {
