@@ -1,3 +1,4 @@
+import html
 import re
 import time
 from urllib.parse import quote_plus
@@ -125,13 +126,16 @@ def extract_products(data):
             price = p.get("price") or {}
 
             bullets = [
-                re.sub(r"<[^>]+>", "", b).strip()
+                html.unescape(re.sub(r"<[^>]+>", "", b)).strip()
                 for b in (desc.get("bullet_descriptions") or [])
                 if b
             ]
 
             products.append({
-                "name": desc.get("title", ""),
+                # Target's API returns titles with HTML entities (e.g. &#39;
+                # for apostrophes) — unescape so the published name reads
+                # "Lil' Weirdo's", not "Lil&#39; Weirdo&#39;s".
+                "name": html.unescape(desc.get("title", "")),
                 "price": price.get("formatted_current_price", ""),
                 "price_value": price.get("current_retail"),
                 "product_url": item.get("enrichment", {}).get("buy_url", ""),

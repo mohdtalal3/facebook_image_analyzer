@@ -28,7 +28,7 @@ import argparse
 import json
 import os
 from datetime import date, timedelta
-from html import escape
+from html import escape, unescape
 from pathlib import Path
 
 import requests
@@ -110,7 +110,11 @@ def render_item_html(item_index: int, name: str, img_url: str,
     (or with a line over 110 chars) are clamped to 2 lines with a
     "Show more" toggle that reveals the rest. With `defer_image` the image
     URL goes into data-src for lazy loading (hidden show-more items)."""
-    title = name or f"Item #{item_index}"
+    # Retailer APIs sometimes return names/descriptions with HTML entities
+    # already encoded (Target: "Lil&#39; Weirdo&#39;s") — unescape first so
+    # the single escape() below doesn't double-encode them into visible
+    # "&#39;" text on the page.
+    title = unescape(name) if name else f"Item #{item_index}"
     title_safe = escape(title)
     title_html = f"{item_index}) {title_safe}"
     if price:
@@ -131,8 +135,8 @@ def render_item_html(item_index: int, name: str, img_url: str,
     if description:
         desc_style = ("max-width:400px;margin:10px auto 0;text-align:left;font-size:14px;"
                       "line-height:1.5;color:#333;")
-        desc_lines = [l.strip() for l in description.split("\n") if l.strip()]
-        desc_html = "".join(f"<div>{escape(line)}</div>" for line in desc_lines)
+        desc_lines = [escape(unescape(l.strip())) for l in description.split("\n") if l.strip()]
+        desc_html = "".join(f"<div>{line}</div>" for line in desc_lines)
 
         is_long = len(desc_lines) > 2 or any(len(l) > 110 for l in desc_lines)
 
