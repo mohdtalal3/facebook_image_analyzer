@@ -24,7 +24,8 @@ load_dotenv()
 
 KIE_API_KEY = os.getenv("KIE_API_KEY", "")
 UPLOAD_URL = "https://kieai.redpandaai.co/api/file-stream-upload"
-CHAT_COMPLETIONS_URL = "https://api.kie.ai/gemini-3-8-flash-openai/v1/chat/completions"
+RESPONSES_URL = "https://api.kie.ai/codex/v1/responses"
+ANALYSIS_MODEL = "gpt-6-luna"
 
 HEADERS_AUTH = {"Authorization": f"Bearer {KIE_API_KEY}"}
 
@@ -93,7 +94,18 @@ DO NOT guess the brand based on familiarity, packaging style, colors, or product
 IMPORTANT — PRODUCT IDENTIFICATION:
 Identify the actual primary product separately from the brand.
 
-Use the most specific product name clearly visible, including flavor, variant, type, or version when applicable.
+The product_name MUST be the FULL descriptive product name — always include the flavor/variety AND the product type when they are visible.
+
+Examples of the required level of detail:
+- "Apple Harvest" alone is NOT enough → "Apple Harvest Soft & Chewy Candy"
+- "Hummus" alone is NOT enough → "Brownie Batter Dessert Hummus"
+- "Coffee Capsules" alone is NOT enough → "Pumpkin Spice Flavored Coffee Capsules"
+- "Heat Puffs" alone is NOT enough → "The Flavor of Fear Sweet Phantom Heat Puffs"
+
+Include in product_name (when visible on the package):
+- Flavor / variety (e.g. Pumpkin Spice, Apple Harvest, Brownie Batter)
+- Product type / form (e.g. Candy, Hummus, Coffee Capsules, Yogurt, Cookie Dough)
+- Descriptive qualifiers that are part of the product's name (e.g. Soft & Chewy, Dessert, Flavored)
 
 Do NOT include the brand name in product_name.
 
@@ -234,8 +246,18 @@ def upload_image(file_path: str, upload_path: str = "fb_product_images", mime: s
 
 
 def _extract_response_text(data: dict) -> str | None:
-    """Extract the model's text reply from the OpenAI-compatible
-    chat-completions response, falling back to a recursive scan."""
+    """Extract the model's text reply from the Responses API shape
+    (output[].content[].output_text), falling back to the chat-completions
+    shape and then a recursive scan."""
+    try:
+        for item in data.get("output", []) or []:
+            if item.get("type") == "message":
+                for c in item.get("content", []) or []:
+                    if c.get("type") in ("output_text", "text") and c.get("text"):
+                        return c["text"]
+    except Exception:
+        pass
+
     try:
         content = data["choices"][0]["message"]["content"]
         if isinstance(content, str) and content:
@@ -281,7 +303,7 @@ def _parse_json_block(text: str) -> dict:
 
 
 def analyze_product_image(image_url: str, timeout: int = 600) -> dict:
-    """Call KIE Gemini 3.6 Flash to extract brand/product/category from an image.
+    """Call KIE GPT-6 Luna to extract brand/product/category from an image.
 
     Returns {"brand": ..., "product_name": ..., "category": ...,
     "subcategory": ...}.
@@ -289,18 +311,18 @@ def analyze_product_image(image_url: str, timeout: int = 600) -> dict:
     recording a failed-analysis placeholder instead of losing the post.
     """
     payload = {
-        "model": "gemini-3-8-flash-openai",
-        "stream": False,  # default is true (SSE) — we want one JSON response back
-        "messages": [
+        "model": ANALYSIS_MODEL,
+        "stream": False,  # one JSON response back (endpoint default is false)
+        "input": [
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": PRODUCT_EXTRACTION_PROMPT},
-                    {"type": "image_url", "image_url": {"url": image_url}},
+                    {"type": "input_text", "text": PRODUCT_EXTRACTION_PROMPT},
+                    {"type": "input_image", "image_url": image_url},
                 ],
             }
         ],
-        "reasoning_effort": "low",
+        "reasoning": {"effort": "low"},
     }
 
     # 429-aware retry: KIE rejects (does not queue) requests over the
@@ -311,7 +333,7 @@ def analyze_product_image(image_url: str, timeout: int = 600) -> dict:
     for attempt in range(1, 4):
         rate_limiter.acquire()
         response = requests.post(
-            CHAT_COMPLETIONS_URL,
+            RESPONSES_URL,
             headers={**HEADERS_AUTH, "Content-Type": "application/json"},
             json=payload,
             timeout=timeout,
@@ -327,7 +349,8 @@ def analyze_product_image(image_url: str, timeout: int = 600) -> dict:
     data = response.json()
     usage = data.get("usage") or {}
     credits_consumed = data.get("credits_consumed")
-    print(f"  🔢 Tokens — input: {usage.get('prompt_tokens')}, output: {usage.get('completion_tokens')}, "
+    print(f"  🔢 Tokens — input: {usage.get('input_tokens') or usage.get('prompt_tokens')}, "
+          f"output: {usage.get('output_tokens') or usage.get('completion_tokens')}, "
           f"total: {usage.get('total_tokens')} | credits consumed: {credits_consumed}")
 
     text = _extract_response_text(data)
