@@ -68,5 +68,12 @@ def get_searcher(brand: str):
     cls = SEARCHERS.get(brand)
     if not cls:
         return None
-    return cls(_proxy_from_env())
+    proxy = _proxy_from_env()
+    if brand == "Target" and proxy and "__cr." in proxy:
+        # Target sits behind PerimeterX, which challenges US datacenter
+        # exits with a 435 + captcha. Drop the US country pin so the request
+        # exits from a non-US IP (validated: __nocr.us passes, __cr.us gets
+        # blocked).
+        proxy = proxy.replace("__cr.", "__nocr.")
+    return cls(proxy)
 
