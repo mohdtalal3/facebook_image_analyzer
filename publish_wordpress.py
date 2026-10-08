@@ -301,7 +301,14 @@ def build_page_title(brand: str, template: str | None = None,
     today = today or date.today()
     start_idx = WEEKDAY_INDEX.get((week_start_day or "friday").strip().lower(), 4)
     days_since_start = (today.weekday() - start_idx) % 7
-    week_start = today - timedelta(days=days_since_start)
+    if days_since_start == 6:
+        # Run day IS the ad week's last day (e.g. ALDI publishes on Thursday,
+        # the day before the Friday ad-week starts) — the finds being posted
+        # are for the UPCOMING ad week, so roll the window forward instead of
+        # showing the week that just ended.
+        week_start = today + timedelta(days=1)
+    else:
+        week_start = today - timedelta(days=days_since_start)
     week_end = week_start + timedelta(days=6)
     date_range = f"{week_start.month}/{week_start.day} – {week_end.month}/{week_end.day}"
     label = "Non-Food Finds Everyone’s Grabbing" if category == "non_food" \

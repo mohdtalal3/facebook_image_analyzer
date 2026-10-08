@@ -325,12 +325,13 @@ def analyze_product_image(image_url: str, timeout: int = 600) -> dict:
         "reasoning": {"effort": "low"},
     }
 
-    # 429-aware retry: KIE rejects (does not queue) requests over the
-    # account's 20-per-10s cap — e.g. when several brand jobs' limiters
-    # collectively overshoot. Back off a full window per attempt instead of
-    # failing the image outright.
+    # Retry loop: KIE rejects (does not queue) requests over the account's
+    # 20-per-10s cap with a 429, and its endpoint intermittently returns 5xx
+    # (e.g. 500 Internal Server Error). Both are transient — retry up to
+    # MAX_RETRIES times with backoff instead of failing the image outright.
+    MAX_RETRIES = 6
     response = None
-    for attempt in range(1, 4):
+    for attempt in range(1, MAX_RETRIES + 1):
         rate_limiter.acquire()
         response = requests.post(
             RESPONSES_URL,
@@ -339,11 +340,14 @@ def analyze_product_image(image_url: str, timeout: int = 600) -> dict:
             timeout=timeout,
         )
        # print(response.json())
-        if response.status_code != 429:
+        if response.status_code == 200:
             break
+        if response.status_code != 429 and response.status_code < 500:
+            break  # non-transient client error — don't retry
         wait = KIE_RATE_WINDOW_SECONDS * attempt
-        print(f"  ⚠️ KIE rate limit hit (429), attempt {attempt}/3 — waiting {wait}s")
-        if attempt < 3:
+        print(f"  ⚠️ KIE request failed with {response.status_code} "
+              f"(attempt {attempt}/{MAX_RETRIES}) — waiting {wait}s before retry")
+        if attempt < MAX_RETRIES:
             time.sleep(wait)
     response.raise_for_status()
     data = response.json()
