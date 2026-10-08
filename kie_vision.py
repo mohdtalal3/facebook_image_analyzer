@@ -25,7 +25,7 @@ load_dotenv()
 KIE_API_KEY = os.getenv("KIE_API_KEY", "")
 UPLOAD_URL = "https://kieai.redpandaai.co/api/file-stream-upload"
 RESPONSES_URL = "https://api.kie.ai/codex/v1/responses"
-ANALYSIS_MODEL = "gpt-6-luna"
+ANALYSIS_MODEL = "gpt-5-6-luna"
 
 HEADERS_AUTH = {"Authorization": f"Bearer {KIE_API_KEY}"}
 
