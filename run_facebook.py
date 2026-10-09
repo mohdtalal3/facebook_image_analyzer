@@ -49,7 +49,7 @@ import requests
 import brand_mapping
 import fb_client
 import image_pipeline
-import analysis
+import analysis as analysis_module
 import scrapers
 import generate
 from generate import make_comparison_image
@@ -208,7 +208,7 @@ def _process_one_image(orig_path_str: str, index: int, processed_dir: Path, post
             analysis = {"brand": None, "product_name": None, "category": None, "subcategory": None, "analysis_status": "skipped"}
         else:
             try:
-                result = analysis.analyze_product_image(processed_path)
+                result = analysis_module.analyze_product_image(processed_path)
                 analysis = {**result, "analysis_status": "success"}
             except Exception as e:
                 print(f"  ⚠️  OpenAI analysis failed for {orig_path.name}: {e}")
