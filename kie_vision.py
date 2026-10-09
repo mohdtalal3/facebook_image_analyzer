@@ -24,8 +24,8 @@ load_dotenv()
 
 KIE_API_KEY = os.getenv("KIE_API_KEY", "")
 UPLOAD_URL = "https://kieai.redpandaai.co/api/file-stream-upload"
-RESPONSES_URL = "https://api.kie.ai/codex/v1/responses"
-ANALYSIS_MODEL = "gpt-5-6-luna"
+MESSAGES_URL = "https://api.kie.ai/claude/v1/messages"
+ANALYSIS_MODEL = "claude-haiku-5-5"
 
 HEADERS_AUTH = {"Authorization": f"Bearer {KIE_API_KEY}"}
 
@@ -246,9 +246,16 @@ def upload_image(file_path: str, upload_path: str = "fb_product_images", mime: s
 
 
 def _extract_response_text(data: dict) -> str | None:
-    """Extract the model's text reply from the Responses API shape
-    (output[].content[].output_text), falling back to the chat-completions
-    shape and then a recursive scan."""
+    """Extract the model's text reply — tries the Anthropic Messages shape
+    (content[].text), then the Responses API shape (output[].content[]),
+    then chat-completions, then a recursive scan."""
+    try:
+        for c in data.get("content", []) or []:
+            if c.get("type") == "text" and c.get("text"):
+                return c["text"]
+    except Exception:
+        pass
+
     try:
         for item in data.get("output", []) or []:
             if item.get("type") == "message":
@@ -303,7 +310,7 @@ def _parse_json_block(text: str) -> dict:
 
 
 def analyze_product_image(image_url: str, timeout: int = 600) -> dict:
-    """Call KIE GPT-6 Luna to extract brand/product/category from an image.
+    """Call KIE Claude Haiku 5.5 to extract brand/product/category from an image.
 
     Returns {"brand": ..., "product_name": ..., "category": ...,
     "subcategory": ...}.
@@ -312,17 +319,17 @@ def analyze_product_image(image_url: str, timeout: int = 600) -> dict:
     """
     payload = {
         "model": ANALYSIS_MODEL,
-        "stream": False,  # one JSON response back (endpoint default is false)
-        "input": [
+        "stream": False,  # endpoint default is true (SSE) — we want one JSON response back
+        "thinkingFlag": False,
+        "messages": [
             {
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": PRODUCT_EXTRACTION_PROMPT},
-                    {"type": "input_image", "image_url": image_url},
+                    {"type": "text", "text": PRODUCT_EXTRACTION_PROMPT},
+                    {"type": "image", "source": {"type": "url", "url": image_url}},
                 ],
             }
         ],
-        "reasoning": {"effort": "low"},
     }
 
     # Retry loop: KIE rejects (does not queue) requests over the account's
@@ -334,7 +341,7 @@ def analyze_product_image(image_url: str, timeout: int = 600) -> dict:
     for attempt in range(1, MAX_RETRIES + 1):
         rate_limiter.acquire()
         response = requests.post(
-            RESPONSES_URL,
+            MESSAGES_URL,
             headers={**HEADERS_AUTH, "Content-Type": "application/json"},
             json=payload,
             timeout=timeout,
