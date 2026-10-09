@@ -10,7 +10,7 @@ An AI-powered pipeline that scrapes posts from a Facebook page, group, or a sing
 2. **Fetch** — Pulls posts in a configured date range (page/group) or a single post, filtered by a minimum-comment threshold
 3. **Collect** — Fetches every image attached to each selected post (comment scraping is currently a toggle-off-able step — see Testing Toggles below)
 4. **Process** — Converts each image to grayscale and compresses it to <= 200KB
-5. **Analyze** — Sends the processed image to **KIE AI** (`gpt-5-6-luna`) to extract brand, product name, and food/non-food category — in parallel across a post's images, rate-limited to stay under KIE's request cap
+5. **Analyze** — Sends the processed image straight to **OpenAI** (`gpt-6-luna`, Responses API) as a base64 data URL to extract brand, product name, and food/non-food category — in parallel across a post's images
 6. **Save** — Writes structured per-post JSON plus a job-wide image→analysis mapping
 7. **Export** — Bundles everything for a job (post JSON + original images + the mapping — not the intermediate processed images) into a downloadable ZIP from the dashboard
 
@@ -26,7 +26,7 @@ All of this runs through a Flask web dashboard in the background — configure a
 - **Background jobs** — fire and forget; view live logs and a processing-status stepper while the pipeline runs
 - **Recurring schedule** — day/time/timezone-based, re-scrapes configured Page/Group sources automatically and skips posts already processed (a schedule can't target a single post — use the Run Bot form for that)
 - **Comment threshold filter** — only process posts with at least N comments (0 = process all)
-- **Concurrent, rate-limited image analysis** — a post's images are processed and analyzed in parallel (`ThreadPoolExecutor`), while a shared rate limiter keeps actual KIE API calls under its ~20 requests/10s cap regardless of how many threads are running
+- **Concurrent image analysis** — a post's images are processed and analyzed in parallel (`ThreadPoolExecutor`); the shared rate limiter (kie_ratelimit.py) keeps the KIE image-generation calls under its ~20 requests/10s account cap
 - **Per-image failure isolation** — a failed image analysis never loses the rest of the post's data
 - **Dedup** — a post is never reprocessed within a job, and processed post IDs carry forward across scheduled runs
 - **ZIP download** — built on demand per job, old exports swept automatically
@@ -44,7 +44,9 @@ facebook-image-analyzer/
 ├── fb_client.py            # Wrapper around the vendored facebook/ scraper library
 ├── run_facebook.py         # The pipeline itself — fetch → comments → images → process → analyze → save
 ├── image_pipeline.py       # Grayscale + JPEG compression to <= 200KB
-├── kie_vision.py           # KIE image upload + GPT-5.6 Luna product extraction (+ rate limiter, standalone CLI)
+├── analysis.py             # OpenAI GPT-6 Luna product extraction (standalone CLI)
+├── generate.py             # KIE upload + nano-banana-2 AI image generation
+├── kie_ratelimit.py        # Shared KIE rate limiter (paces the generation path)
 ├── zip_export.py           # On-demand per-job ZIP export
 │
 ├── facebook/                # Vendored Facebook scraper library (separate git repo)
@@ -103,7 +105,10 @@ pip install flask apscheduler python-dotenv requests pillow
 Create a `.env` file in the project root:
 
 ```env
-# KIE AI — image upload + GPT-5.6 Luna product extraction
+# OpenAI — product analysis (GPT-6 Luna)
+OPENAI_API_KEY=your_openai_key
+
+# KIE AI — AI image generation (nano-banana-2, upload + createTask/pollTask)
 KIE_API_KEY=your_kie_key
 ```
 
@@ -152,10 +157,10 @@ MAX_IMAGES_PER_POST = 2      # cap images actually downloaded+analyzed per post
 
 `MAX_IMAGES_PER_POST` is enforced at fetch time (the scraper stops downloading once the cap is hit), not by downloading everything and discarding the extras.
 
-You can also test the KIE integration directly, without running a full job:
+You can also test the OpenAI analysis directly, without running a full job:
 
 ```bash
-python3 kie_vision.py /path/to/image.jpg
+python3 analysis.py /path/to/image.jpg "BRAND NAME"
 ```
 
 ---
@@ -187,7 +192,13 @@ Each processed post gets its own folder under `output/<job_id>/post_<post_id>/`:
         "category": "food",
         "analysis_status": "success",
         "tokens_used": 1834,
-        "credits_consumed": 0.01
+        "tokens": {
+          "input": 1200,
+          "cached_input": 0,
+          "output": 634,
+          "reasoning": 256
+        },
+        "cost_usd": 0.0004
       }
     }
   ]

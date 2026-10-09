@@ -54,7 +54,7 @@ PUBLISH_TARGETS = {
     },
 }
 
-# KIE food subcategories (kie_vision.PRODUCT_EXTRACTION_PROMPT) — the page
+# Food subcategories (analysis.PRODUCT_EXTRACTION_PROMPT) — the page
 # groups food items under these headings; anything null/unrecognized lands
 # in "Other".
 SUBCATEGORIES = [

@@ -49,10 +49,11 @@ import requests
 import brand_mapping
 import fb_client
 import image_pipeline
-import kie_vision
+import analysis
 import scrapers
 import generate
 from generate import make_comparison_image
+from kie_ratelimit import rate_limiter
 from image_pipeline import compress_under_limit
 from price_overlay import overlay_price_on_image
 from publish_wordpress import publish_brand
@@ -207,11 +208,10 @@ def _process_one_image(orig_path_str: str, index: int, processed_dir: Path, post
             analysis = {"brand": None, "product_name": None, "category": None, "subcategory": None, "analysis_status": "skipped"}
         else:
             try:
-                public_url = kie_vision.upload_image(processed_path)
-                result = kie_vision.analyze_product_image(public_url)
+                result = analysis.analyze_product_image(processed_path)
                 analysis = {**result, "analysis_status": "success"}
             except Exception as e:
-                print(f"  ⚠️  KIE analysis failed for {orig_path.name}: {e}")
+                print(f"  ⚠️  OpenAI analysis failed for {orig_path.name}: {e}")
     except Exception as e:
         print(f"  ⚠️  Image processing failed for {orig_path.name}: {e}")
 
@@ -1113,7 +1113,7 @@ def generate_ai_images(job_dir: Path, brand: str, brand_slug: str, category: str
         if not entry.get("ai_image"):  # already generated in a previous run — don't regenerate
             try:
                 public_url = generate.upload_image(str(img_path))
-                kie_vision.rate_limiter.acquire()
+                rate_limiter.acquire()
                 prompt = render_image_prompt(prompt_template, brand, entry)
                 task_id = generate.create_task(public_url, prompt=prompt)
                 result_url = generate.poll_task(task_id)

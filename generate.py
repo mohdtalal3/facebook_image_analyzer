@@ -10,7 +10,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-import kie_vision
+from kie_ratelimit import rate_limiter
 from constants import AI_IMAGE_COMPARE, AI_IMAGE_MAX_BYTES
 from data_store import load_workspaces
 from image_pipeline import compress_under_limit
@@ -29,10 +29,52 @@ HEADERS_AUTH = {"Authorization": f"Bearer {KIE_API_KEY}"}
 PROMPT_FILE = os.path.join(os.path.dirname(__file__), "prompt.txt")
 
 
+class KieUploadError(Exception):
+    pass
+
+
 def load_prompt(prompt_file: str = None) -> str:
     path = prompt_file or PROMPT_FILE
     with open(path, "r", encoding="utf-8") as f:
         return f.read().strip()
+
+
+def _kie_upload(file_path: str, upload_path: str = "screenshots", mime: str = "image/png",
+                max_retries: int = 3) -> str:
+    """Upload a local image to KIE's file-stream-upload endpoint and return
+    its public URL.
+
+    Paced through the shared account-wide rate limiter (kie_ratelimit.py)
+    and retried up to max_retries times with backoff — a transient upload
+    failure no longer fails the image outright."""
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            rate_limiter.acquire()
+            with open(file_path, "rb") as f:
+                response = requests.post(
+                    UPLOAD_URL,
+                    headers=HEADERS_AUTH,
+                    files={"file": (os.path.basename(file_path), f, mime)},
+                    data={"uploadPath": upload_path},
+                    timeout=60,
+                )
+            response.raise_for_status()
+            data = response.json()
+            if not data.get("success"):
+                raise KieUploadError(f"Upload failed: {data}")
+            file_data = data["data"]
+            url = file_data.get("fileUrl") or file_data.get("url") or file_data.get("downloadUrl")
+            if not url:
+                raise KieUploadError(f"Could not find URL in upload response: {file_data}")
+            return url
+        except Exception as e:
+            last_error = e
+            print(f"  ⚠️ Upload attempt {attempt}/{max_retries} failed for "
+                  f"{os.path.basename(file_path)}: {e}")
+            if attempt < max_retries:
+                time.sleep(2 * attempt)
+    raise last_error
 
 
 def upload_image(file_path: str) -> str:
@@ -40,15 +82,13 @@ def upload_image(file_path: str) -> str:
 
     The file is first copied to a temp file with a random UUID name so the
     uploaded filename is never the same twice, then that copy is uploaded
-    and removed. Delegates to kie_vision.upload_image — same KIE
-    file-stream-upload endpoint, one shared implementation (retry + shared
-    account-wide rate limiting) for both the analysis and AI-generation
-    paths."""
+    and removed (KIE file-stream-upload, paced through the shared
+    account-wide rate limiter)."""
     src = Path(file_path)
     tmp = src.with_name(f"{uuid.uuid4().hex}{src.suffix or '.jpg'}")
     try:
         shutil.copyfile(src, tmp)
-        return kie_vision.upload_image(str(tmp), upload_path="screenshots", mime="image/png")
+        return _kie_upload(str(tmp), upload_path="screenshots", mime="image/png")
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -262,7 +302,7 @@ def generate_image(image_path: str, brand: str, product_name: str = "",
     public_url = upload_image(str(img_path))
     print(f"Uploaded: {public_url}")
 
-    kie_vision.rate_limiter.acquire()
+    rate_limiter.acquire()
     task_id = create_task(public_url, prompt=prompt)
     print(f"Task    : {task_id}")
     result_url = poll_task(task_id)

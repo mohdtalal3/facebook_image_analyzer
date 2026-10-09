@@ -4,14 +4,14 @@ Central place for tunable pipeline constants and testing toggles.
 
 Actual secrets (API keys, tokens) stay in .env — this file is for behavior
 knobs that used to be scattered across individual modules. Flip these
-instead of hunting through run_facebook.py / kie_vision.py / etc.
+instead of hunting through run_facebook.py / analysis.py / etc.
 """
 
 # ── run_facebook.py pipeline toggles ──
 FETCH_COMMENTS = False                # skip comment scraping — not needed right now
-ANALYZE_IMAGES = True        # run the KIE upload+analyze workflow at all —
+ANALYZE_IMAGES = True        # run the OpenAI analysis workflow at all —
                                  # when False, images are still downloaded/processed
-                                 # but never sent to KIE (analysis_status: "skipped")
+                                 # but never sent to the vision model (analysis_status: "skipped")
 MAX_IMAGES_PER_POST = 5            # cap images downloaded/processed/analyzed per post —
                                  # None = no limit (all images; a 50-image hard safety cap
                                  # still applies inside the album walk), or a number to cap
@@ -24,10 +24,10 @@ PAGE_SCAN_WORKERS = 3               # parallel page/group URL discovery threads 
                                 # overlaps the long pagination waits)
 
 # ── run_facebook.py publish-prep: scraper analysis ──
-SCRAPER_ANALYSIS = True               # after KIE analysis, look each FOOD image's product up on the
+SCRAPER_ANALYSIS = True               # after OpenAI analysis, look each FOOD image's product up on the
                                 # brand's own site (scrapers/, e.g. AldiSearcher) and attach
                                 # name/price/description — shown on the WordPress page. When
-                                # False, publishing uses only the KIE image-analysis data.
+                                # False, publishing uses only the OpenAI image-analysis data.
 PRICE_ON_IMAGE = True                     # stamp the scraped price onto the food image itself as a red
                                 # rounded badge (top-right, price_overlay.py) before upload
 SCRAPER_WORKERS = 5                   # parallel keyword-search threads in enrich_food_images_with_scrapes —
@@ -78,7 +78,7 @@ MAX_PROCESSED_BYTES = 204800        # 200 KB cap for processed (grayscale) image
 MIN_QUALITY = 20                        # floor for JPEG quality before we start downscaling
 MIN_SCALE = 0.25                        # floor for resolution downscale factor
 
-# ── kie_vision.py rate limiter ──
+# ── kie_ratelimit.py rate limiter ──
 KIE_MAX_REQUESTS_PER_WINDOW = 18        # stay under KIE's ~20 requests/10s account cap
 KIE_RATE_WINDOW_SECONDS = 10
 
